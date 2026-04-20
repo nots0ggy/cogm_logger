@@ -19,3 +19,10 @@ dist
 build
 Output
 test-data
+# Editor/tooling artifacts
+CLAUDE.md
+**/CLAUDE.md
+.claude/
+.claude-mem/
+.cursorrules
+.aider*
