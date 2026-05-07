@@ -9,7 +9,7 @@ if sys.platform != "win32":
     sys.modules.setdefault("scapy.arch.windows", types.ModuleType("scapy.arch.windows"))
 
 from src import config
-from src.options import status_check, open, sniff, record, update_config, analyze
+from src.options import status_check, open, sniff, record, update_config, live_capture as analyze
 
 import time
 from time import localtime, strftime
