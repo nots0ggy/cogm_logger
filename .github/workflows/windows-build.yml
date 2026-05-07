@@ -37,7 +37,13 @@ jobs:
               shell: pwsh
               working-directory: logger
               run: |
-                  pyinstaller logger.spec -y
+                  pyinstaller --log-level=DEBUG logger.spec -y 2>&1 | Tee-Object -FilePath pyinstaller-build.log
+                  Write-Host "=== warn-logger.txt ==="
+                  if (Test-Path "build\logger\warn-logger.txt") {
+                      Get-Content "build\logger\warn-logger.txt"
+                  }
+                  Write-Host "=== modulegraph trace for analyze ==="
+                  Select-String -Path "pyinstaller-build.log" -Pattern "analyze","src\.options" -SimpleMatch | Select-Object -First 100
 
             - name: Copy logger output into dist
               shell: pwsh
