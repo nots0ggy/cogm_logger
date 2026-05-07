@@ -142,7 +142,26 @@ const config = {
 	   700: '#85311d',
 	   800: '#5d2216',
 	   900: '#3b160e'
+	  },
+	  status: {
+	   idle: '#6b7280',
+	   recording: '#ef4444',
+	   ok: '#27ac9d',
+	   warn: '#f5cd40',
+	   error: '#ef4444'
 	  }
+	 },
+	 fontFamily: {
+	  sans: ['system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif']
+	 },
+	 keyframes: {
+	  'pulse-rec': {
+	   '0%, 100%': { opacity: '1' },
+	   '50%': { opacity: '0.35' }
+	  }
+	 },
+	 animation: {
+	  'pulse-rec': 'pulse-rec 1.5s ease-in-out infinite'
 	 }
 	}
    },

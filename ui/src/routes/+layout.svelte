@@ -26,10 +26,10 @@
 
 {#if is_ready}
 	<div class="h-full w-full">
-		<div class="h-screen p-4 w-full max-w-7xl mx-auto">
+		<div class="h-screen w-full max-w-7xl mx-auto flex flex-col">
 			<Header />
 			<div
-				class="mt-8 flex flex-col items-center"
+				class="mt-4 px-4 flex-1 flex flex-col"
 				bind:this={container}
 				style="height: {get_remaining_height(container, 16)}px;"
 			>

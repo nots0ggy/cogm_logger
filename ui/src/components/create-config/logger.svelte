@@ -355,6 +355,28 @@
 		return t > 0 ? (alliance_overview.enemy.kills / t) * 100 : 0;
 	})();
 
+	$: personal_kill_share = (() => {
+		const total = alliance_overview.own.kills;
+		if (total <= 0) return 0;
+		return (personal_stats.kills / total) * 100;
+	})();
+
+	$: last_log = logs.length > 0 ? logs[logs.length - 1] : null;
+	$: last_event = (() => {
+		if (!last_log) return null;
+		const is_kill = last_log.hex[possible_kill_offsets[kill_index]] === '1';
+		const p1 = get_name(player_one_index, last_log);
+		const p2 = get_name(player_two_index, last_log);
+		const guild = get_name(guild_index, last_log);
+		return {
+			time: last_log.time,
+			actor: is_kill ? p1 : p2,
+			target: is_kill ? p2 : p1,
+			guild,
+			is_kill
+		};
+	})();
+
 	function update_personal_family_name(value: string) {
 		personal_family_name = value;
 		storage.setData(personal_stats_storage_key, personal_family_name).catch(() => null);
@@ -457,90 +479,111 @@
 		{/key}
 		</div>
 		<!-- Stats panel fills the remaining right space -->
-		<div class="flex-1 flex flex-col gap-2 text-xs h-full overflow-y-auto">
-			<div class="rounded-lg border border-gray-700 p-2.5">
-				<div class="flex items-center justify-between gap-1 mb-1.5">
-					<p class="uppercase tracking-wide text-gray-400">War Overview</p>
-					<button
-						class="bg-gray-700 px-1.5 py-0.5 rounded"
-						on:click={() => {
-							ModalManager.open(GuildInfos, {
-								logs: logs.map((l) => ({
-									names: l.names.map((n) => n.name),
-									kill: l.hex[possible_kill_offsets[kill_index]] === '1'
-								})),
-								guild_index,
-								player_one_index,
-								player_two_index
-							});
-						}}>Details</button
-					>
+		<div class="flex-1 flex flex-col text-xs h-full overflow-y-auto rounded-md border border-gray-700 bg-background-secondary p-3">
+			<!-- YOUR K/D -->
+			<div class="flex items-center justify-between">
+				<span class="heading-h2">Your K/D</span>
+				<button
+					class="text-caption hover:text-foreground transition-colors"
+					on:click={() => {
+						ModalManager.open(GuildInfos, {
+							logs: logs.map((l) => ({
+								names: l.names.map((n) => n.name),
+								kill: l.hex[possible_kill_offsets[kill_index]] === '1'
+							})),
+							guild_index,
+							player_one_index,
+							player_two_index
+						});
+					}}>Details</button
+				>
+			</div>
+			{#if !personal_family_name.trim()}
+				<p class="text-caption mt-2">Set your family name in Settings to see personal stats</p>
+			{:else}
+				<div class="flex items-baseline justify-between mt-2">
+					<span class="tabular-nums">
+						<span class="text-submarine-400">{personal_stats.kills}</span>
+						<span class="text-foreground-secondary mx-1">/</span>
+						<span class="text-cerise-400">{personal_stats.deaths}</span>
+					</span>
+					<span class="heading-display text-gold tabular-nums">
+						{calculate_kd(personal_stats.kills, personal_stats.deaths)}
+					</span>
 				</div>
+				<div class="mt-2 h-1.5 rounded-full bg-gold/20 overflow-hidden">
+					<div class="h-full bg-gold transition-all" style="width: {personal_kill_share}%"></div>
+				</div>
+				<p class="text-caption mt-1 tabular-nums">{personal_kill_share.toFixed(0)}% of alliance kills</p>
+			{/if}
+
+			<!-- ALLIANCE -->
+			<div class="divider-top">
+				<span class="heading-h2">Alliance</span>
 				{#if logs.length === 0}
-					<p class="text-gray-500">No logs yet</p>
+					<p class="text-caption mt-2">Waiting for combat events...</p>
 				{:else}
-					<p class="text-gray-400">{own_guild_member_count} vs {enemy_count} players</p>
-					<p class="mt-1">
-						<span class="text-submarine-500">K {alliance_overview.own.kills}</span>
-						<span class="text-gray-500 mx-1">·</span>
-						<span class="text-red-500">D {alliance_overview.own.deaths}</span>
-						<span class="text-gray-500 mx-1">·</span>
-						<span class="font-semibold">{calculate_kd(alliance_overview.own.kills, alliance_overview.own.deaths)}</span>
+					<p class="mt-2 tabular-nums">
+						<span class="text-submarine-400">K {alliance_overview.own.kills}</span>
+						<span class="text-foreground-secondary mx-2">·</span>
+						<span class="text-cerise-400">D {alliance_overview.own.deaths}</span>
+						<span class="text-foreground-secondary mx-2">·</span>
+						<span class="text-gold font-semibold">K/D {calculate_kd(alliance_overview.own.kills, alliance_overview.own.deaths)}</span>
 					</p>
-					<p class="text-gray-400 mt-0.5">Enemy K/D: <span class="font-semibold text-foreground-secondary">{calculate_kd(alliance_overview.enemy.kills, alliance_overview.enemy.deaths)}</span></p>
+					<p class="text-caption mt-1 tabular-nums">{own_guild_member_count} vs {enemy_count} players</p>
 				{/if}
 			</div>
-			<div class="rounded-lg border border-gray-700 p-2.5">
-				<p class="uppercase tracking-wide text-gray-400 mb-1.5">Personal</p>
-				<input
-					class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 mb-1.5"
-					placeholder="Family name"
-					value={personal_family_name}
-					on:input={handle_personal_family_name_input}
-				/>
-				{#if !personal_family_name.trim()}
-					<p class="text-gray-500">Enter your family name</p>
+
+			<!-- ENEMY -->
+			<div class="divider-top">
+				<span class="heading-h2">Enemy</span>
+				{#if logs.length === 0}
+					<p class="text-caption mt-2">Waiting for combat events...</p>
 				{:else}
-					<p>
-						<span class="text-submarine-500">K {personal_stats.kills}</span>
-						<span class="text-gray-500 mx-1">·</span>
-						<span class="text-red-500">D {personal_stats.deaths}</span>
-						<span class="text-gray-500 mx-1">·</span>
-						<span class="font-semibold">{calculate_kd(personal_stats.kills, personal_stats.deaths)}</span>
+					<p class="mt-2 tabular-nums">
+						<span class="text-cerise-400">K {alliance_overview.enemy.kills}</span>
+						<span class="text-foreground-secondary mx-2">·</span>
+						<span class="text-submarine-400">D {alliance_overview.enemy.deaths}</span>
+						<span class="text-foreground-secondary mx-2">·</span>
+						<span class="font-semibold">K/D {calculate_kd(alliance_overview.enemy.kills, alliance_overview.enemy.deaths)}</span>
 					</p>
 				{/if}
 			</div>
-			<div class="rounded-lg border border-gray-700 p-2.5">
-				<p class="uppercase tracking-wide text-gray-400 mb-2">K/D Breakdown</p>
-				{#if logs.length === 0}
-					<p class="text-gray-500">No logs yet</p>
+
+			<!-- LAST EVENT -->
+			<div class="divider-top">
+				<span class="heading-h2">Last Event</span>
+				{#if last_event === null}
+					<p class="text-caption mt-2">Waiting for combat events...</p>
 				{:else}
-					<div class="mb-3">
-						<div class="flex justify-between mb-1">
-							<span class="text-gray-400">Your Alliance</span>
-							<span class="font-semibold">{calculate_kd(alliance_overview.own.kills, alliance_overview.own.deaths)}</span>
-						</div>
-						<div class="h-1.5 rounded-full bg-gray-700 overflow-hidden">
-							<div class="h-full bg-submarine-500 transition-all" style="width: {ownKillPct}%"></div>
-						</div>
-						<div class="flex justify-between mt-1">
-							<span class="text-submarine-500">K {alliance_overview.own.kills}</span>
-							<span class="text-red-500">D {alliance_overview.own.deaths}</span>
-						</div>
-					</div>
-					<div>
-						<div class="flex justify-between mb-1">
-							<span class="text-gray-400">Enemy</span>
-							<span class="font-semibold">{calculate_kd(alliance_overview.enemy.kills, alliance_overview.enemy.deaths)}</span>
-						</div>
-						<div class="h-1.5 rounded-full bg-gray-700 overflow-hidden">
-							<div class="h-full bg-red-500 transition-all" style="width: {enemyKillPct}%"></div>
-						</div>
-						<div class="flex justify-between mt-1">
-							<span class="text-submarine-500">K {alliance_overview.enemy.kills}</span>
-							<span class="text-red-500">D {alliance_overview.enemy.deaths}</span>
-						</div>
-					</div>
+					<p class="mt-2">
+						<span class="text-caption tabular-nums mr-2">{last_event.time}</span>
+						<span class="text-foreground">{last_event.actor}</span>
+						{#if last_event.is_kill}
+							<span class="text-submarine-400 font-semibold mx-1">killed</span>
+						{:else}
+							<span class="text-cerise-400 font-semibold mx-1">died to</span>
+						{/if}
+						<span class="text-foreground">{last_event.target}</span>
+					</p>
+					<p class="text-caption mt-1">from {last_event.guild}</p>
+				{/if}
+			</div>
+
+			<!-- FAMILY NAME -->
+			<div class="divider-top">
+				<span class="heading-h2">Family name</span>
+				{#if personal_family_name.trim()}
+					<p class="mt-2 text-foreground tabular-nums">{personal_family_name}</p>
+					<p class="text-caption mt-1">Change in Settings</p>
+				{:else}
+					<input
+						class="w-full mt-2 bg-background border border-gray-700 rounded px-2 py-1 text-foreground"
+						placeholder="Family name"
+						value={personal_family_name}
+						on:input={handle_personal_family_name_input}
+					/>
+					<p class="text-caption mt-1">Persists across sessions. Also editable in Settings.</p>
 				{/if}
 			</div>
 		</div>

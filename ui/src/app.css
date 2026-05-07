@@ -56,3 +56,35 @@ select {
 	line-height: 1.5rem;
 	--tw-shadow: 0 0 #0000;
 }
+
+.tabular-nums {
+	font-variant-numeric: tabular-nums;
+}
+
+.divider-top {
+	border-top: 1px solid theme('colors.gray.700');
+	padding-top: 12px;
+	margin-top: 12px;
+}
+
+.heading-display {
+	font-family: theme('fontFamily.sans');
+	font-size: 20px;
+	font-weight: 700;
+	letter-spacing: -0.01em;
+}
+
+.heading-h2 {
+	font-family: theme('fontFamily.sans');
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	@apply text-foreground-secondary;
+}
+
+.text-caption {
+	font-size: 11px;
+	font-weight: 500;
+	@apply text-foreground-secondary;
+}
