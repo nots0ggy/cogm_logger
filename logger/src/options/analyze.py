@@ -1,7 +1,8 @@
 import os
 import re
 import sys
-from scapy.all import sniff, rdpcap, get_if_list, wrpcap
+from scapy.all import sniff, rdpcap, get_if_list
+from scapy.utils import wrpcap
 from time import localtime, strftime
 
 
