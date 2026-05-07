@@ -2,7 +2,6 @@ import os
 import re
 import sys
 from scapy.all import sniff, rdpcap, get_if_list
-from scapy.utils import wrpcap
 from time import localtime, strftime
 
 
@@ -75,9 +74,12 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
     uses_tcp = "TCP" in package and hasattr(package["TCP"].payload, "load")
     if is_bdo_ip and uses_tcp:
         # write the raw packet to pcap before parsing so we still capture
-        # subtype packets that don't yield a 5-name match
+        # subtype packets that don't yield a 5-name match. Lazy import so
+        # PyInstaller's modulegraph doesn't choke on scapy.utils at the
+        # module top level (it was marking the whole file as invalid).
         if record_pcap_path is not None:
             try:
+                from scapy.utils import wrpcap
                 wrpcap(record_pcap_path, package, append=True)
             except Exception as exc:
                 print(f"pcap write failed: {exc}", flush=True)
