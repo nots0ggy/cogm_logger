@@ -1,0 +1,113 @@
+name: Windows build
+
+on:
+    workflow_dispatch:
+    push:
+        tags:
+            - 'v*'
+
+jobs:
+    build:
+        runs-on: windows-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.11'
+
+            - name: Set up Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 20
+
+            - name: Install Python build dependencies
+              shell: pwsh
+              run: |
+                  python -m pip install --upgrade pip
+                  python -m pip install scapy pyinstaller
+
+            - name: Build logger.exe with PyInstaller
+              shell: pwsh
+              working-directory: logger
+              run: |
+                  pyinstaller logger.spec -y
+
+            - name: Copy logger output into dist
+              shell: pwsh
+              run: |
+                  New-Item -ItemType Directory -Force -Path "dist\ikusa-logger\logger" | Out-Null
+                  Copy-Item -Path "logger\dist\logger\*" -Destination "dist\ikusa-logger\logger\" -Recurse -Force
+
+            - name: Install UI dependencies
+              shell: pwsh
+              working-directory: ui
+              run: npm ci
+
+            - name: Install Neutralino CLI
+              shell: pwsh
+              run: npm install -g @neutralinojs/neu@11.3.1
+
+            - name: Build Neutralino bundle
+              shell: pwsh
+              run: |
+                  neu update
+                  neu build
+
+            - name: Stage update.bat into dist
+              shell: pwsh
+              run: |
+                  if (Test-Path "update.bat") {
+                      Copy-Item -Path "update.bat" -Destination "dist\ikusa-logger\update.bat" -Force
+                  }
+
+            - name: Verify dist contents
+              shell: pwsh
+              run: |
+                  Write-Host "=== dist/ikusa-logger contents ==="
+                  Get-ChildItem -Recurse "dist\ikusa-logger" | Select-Object FullName, Length
+
+            - name: Install Inno Setup
+              shell: pwsh
+              run: choco install innosetup -y --no-progress
+
+            - name: Build installer with Inno Setup
+              shell: pwsh
+              run: |
+                  & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build-setup.iss
+                  Write-Host "=== Output folder ==="
+                  if (Test-Path "Output") { Get-ChildItem Output }
+
+            - name: Zip portable build
+              shell: pwsh
+              run: |
+                  Compress-Archive -Path "dist\ikusa-logger\*" -DestinationPath "dist\ikusa-logger-portable.zip" -Force
+
+            - name: Upload portable zip
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ikusa-logger-portable
+                  path: dist/ikusa-logger-portable.zip
+                  if-no-files-found: error
+                  retention-days: 30
+
+            - name: Upload installer
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ikusa-logger-installer
+                  path: Output/ikusa-logger-installer.exe
+                  if-no-files-found: error
+                  retention-days: 30
+
+            - name: Create GitHub release on tag
+              if: startsWith(github.ref, 'refs/tags/v')
+              uses: softprops/action-gh-release@v2
+              with:
+                  files: |
+                      dist/ikusa-logger-portable.zip
+                      Output/ikusa-logger-installer.exe
+                  draft: false
+                  prerelease: false
