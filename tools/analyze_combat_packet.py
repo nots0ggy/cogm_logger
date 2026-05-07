@@ -67,6 +67,14 @@ PACKET_LEN = 300
 DEAD_ZONE_START = 35
 DEAD_ZONE_END = 201
 
+# Broader pattern from analyze.py: catches sibling packet subtypes that the
+# shipping parser ignores. First byte high nibble is 5 or 6, then 0x01 0x00,
+# then two arbitrary bytes. Used to classify subtypes during dead-zone work.
+import re
+# Broader regex translates `[56][0-9a-f]0100[0-9a-f]{4}` from analyze.py:
+# byte 0 high nibble in {5,6}, bytes 1-2 are 01 00, bytes 3-4 are wildcards.
+SUBTYPE_REGEX = re.compile(rb"[\x50-\x6f]\x01\x00..", re.DOTALL)
+
 
 def extract_combat_packets(pcap_path: Path) -> list[bytes]:
     """Return the 300-byte combat payload slices from a pcap."""
@@ -93,6 +101,71 @@ def extract_combat_packets(pcap_path: Path) -> list[bytes]:
             packets.append(window)
             payload = payload[idx + PACKET_LEN :]
     return packets
+
+
+def extract_subtype_packets(pcap_path: Path) -> dict:
+    """Group packets by their 5-byte subtype identifier.
+
+    The shipping parser only reads identifier 6301 00 af 12 (kill events).
+    BDO's Enhanced Warscore likely uses sibling identifiers — heal, CC, damage
+    counters — that show up alongside kills in the same TCP stream. This walks
+    the pcap with a broader regex and groups every match by its first 5 bytes.
+
+    Returns:
+        {identifier_hex: list[bytes]} with PACKET_LEN-truncated payloads.
+    """
+    by_identifier: dict[str, list[bytes]] = {}
+    caps = rdpcap(str(pcap_path))
+    carry = b""
+    for pkt in caps:
+        if not pkt.haslayer("TCP"):
+            continue
+        tcp = pkt["TCP"]
+        if not hasattr(tcp.payload, "load"):
+            continue
+        payload = carry + bytes(tcp.payload)
+        last_match_end = 0
+        for m in SUBTYPE_REGEX.finditer(payload):
+            start = m.start()
+            ident_hex = payload[start : start + 5].hex()
+            window_end = min(start + PACKET_LEN, len(payload))
+            window = payload[start:window_end]
+            # Only keep full-length windows for byte/float scans;
+            # short trailing windows go into a "fragment" bucket.
+            if len(window) >= PACKET_LEN:
+                by_identifier.setdefault(ident_hex, []).append(window)
+                last_match_end = start + PACKET_LEN
+            else:
+                by_identifier.setdefault(f"{ident_hex}_short", []).append(window)
+        # carry the tail in case an identifier is split across packet boundaries
+        carry = payload[max(last_match_end, len(payload) - PACKET_LEN) :]
+    return by_identifier
+
+
+def write_subtype_summary(outdir: Path, by_identifier: dict) -> None:
+    """Per-subtype CSVs + a summary index."""
+    sub_dir = outdir / "subtypes"
+    sub_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_rows = []
+    for ident_hex, packets in sorted(by_identifier.items(), key=lambda kv: -len(kv[1])):
+        is_known_kill = ident_hex == "630100af12"
+        guess = "kill (matches shipping parser)" if is_known_kill else "unknown subtype"
+        summary_rows.append(
+            {
+                "identifier": ident_hex,
+                "packet_count": len(packets),
+                "guess": guess,
+            }
+        )
+        # Per-subtype byte profile, only if we have full-length packets.
+        full_packets = [p for p in packets if len(p) == PACKET_LEN]
+        if not full_packets:
+            continue
+        rows = byte_profile(full_packets)
+        write_csv(sub_dir / f"{ident_hex}.csv", rows)
+
+    write_csv(sub_dir / "_summary.csv", summary_rows)
 
 
 def byte_profile(packets: list[bytes]) -> list[dict]:
@@ -327,6 +400,11 @@ def main():
 
     print("dumping 10 raw packet samples ...")
     write_hex_samples(outdir / "raw_samples.txt", packets)
+
+    print("classifying packet subtypes (broader regex pass) ...")
+    by_identifier = extract_subtype_packets(pcap_path)
+    write_subtype_summary(outdir, by_identifier)
+    print(f"  -> {len(by_identifier)} distinct subtype identifiers")
 
     print()
     print(f"done. reports written to {outdir}/")
