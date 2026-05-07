@@ -27,20 +27,6 @@ jobs:
               with:
                   node-version: 20
 
-            - name: Install Npcap SDK + runtime
-              shell: pwsh
-              run: |
-                  # PyInstaller's modulegraph imports scapy.arch.windows during
-                  # analysis. Without Npcap's wpcap.dll on the runner, that
-                  # import partially fails and PyInstaller marks every module
-                  # that touches scapy as "invalid", silently dropping
-                  # src.options.analyze from the bundle.
-                  $url = "https://npcap.com/dist/npcap-1.79.exe"
-                  $out = "$env:RUNNER_TEMP\npcap.exe"
-                  Invoke-WebRequest -Uri $url -OutFile $out
-                  Start-Process -FilePath $out -ArgumentList "/S" -Wait -NoNewWindow
-                  Write-Host "npcap installed"
-
             - name: Install Python build dependencies
               shell: pwsh
               run: |
@@ -51,13 +37,7 @@ jobs:
               shell: pwsh
               working-directory: logger
               run: |
-                  pyinstaller --log-level=DEBUG logger.spec -y 2>&1 | Tee-Object -FilePath pyinstaller-build.log
-                  Write-Host "=== warn-logger.txt ==="
-                  if (Test-Path "build\logger\warn-logger.txt") {
-                      Get-Content "build\logger\warn-logger.txt"
-                  }
-                  Write-Host "=== modulegraph trace for analyze ==="
-                  Select-String -Path "pyinstaller-build.log" -Pattern "analyze","src\.options" -SimpleMatch | Select-Object -First 100
+                  pyinstaller logger.spec -y
 
             - name: Copy logger output into dist
               shell: pwsh

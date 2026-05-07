@@ -178,9 +178,15 @@ def open_pcap(file, output, ip_filter=True, record_pcap_path=None):
 
 def read_network_interfaces():
     if sys.platform == "win32":
-        # Import Windows-specific function
-        from scapy.arch.windows import get_windows_if_list
-        winList = get_windows_if_list()
+        # Use importlib so PyInstaller's static modulegraph doesn't try to
+        # actually import scapy.arch.windows during build. On a Windows CI
+        # runner without Npcap, that import partially fails and modulegraph
+        # marks every file referencing it as "invalid", silently dropping
+        # it from the bundle. collect_submodules('scapy') in logger.spec
+        # still bundles the module for runtime use.
+        import importlib
+        mod = importlib.import_module("scapy.arch.windows")
+        winList = mod.get_windows_if_list()
         return {e["guid"]: e["name"] for e in winList}
 
     else:
