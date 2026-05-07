@@ -38,6 +38,14 @@ jobs:
               working-directory: logger
               run: |
                   pyinstaller logger.spec -y
+                  Write-Host "=== warn-logger.txt ==="
+                  if (Test-Path "build\logger\warn-logger.txt") {
+                      Get-Content "build\logger\warn-logger.txt" | Select-String -Pattern "src\.options","analyze"
+                  }
+                  Write-Host "=== xref analyze entries ==="
+                  if (Test-Path "build\logger\xref-logger.html") {
+                      Select-String -Path "build\logger\xref-logger.html" -Pattern "src\.options\.analyze","invalid" -SimpleMatch | Select-Object -First 10
+                  }
 
             - name: Copy logger output into dist
               shell: pwsh

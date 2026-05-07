@@ -1,7 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import sys
-from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
 
@@ -9,34 +8,13 @@ block_cipher = None
 # doesn't choke on it. On Windows, it must be bundled for network sniffing.
 _excludes = [] if sys.platform == 'win32' else ['scapy.arch.windows']
 
-# Scapy ships modules dynamically (layers, contribs, arch). PyInstaller's
-# static analyzer misses many of them and silently produces a broken
-# .scapy_all module, which then fails sibling imports like
-# `from src.options import analyze` because analyze.py top-level imports
-# scapy. collect_submodules walks the package and bundles everything.
-_scapy_hidden = collect_submodules('scapy')
-
-# Pin our own option modules so PyInstaller never elides one.
-_app_hidden = [
-    'src',
-    'src.config',
-    'src.parser',
-    'src.options',
-    'src.options.analyze',
-    'src.options.open',
-    'src.options.record',
-    'src.options.sniff',
-    'src.options.status_check',
-    'src.options.update_config',
-]
-
 
 a = Analysis(
     ['logger.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=_scapy_hidden + _app_hidden,
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
