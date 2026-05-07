@@ -1,11 +1,6 @@
 import os
 import re
 import sys
-
-if sys.platform != "win32":
-    import types
-    sys.modules.setdefault("scapy.arch.windows", types.ModuleType("scapy.arch.windows"))
-
 from scapy.all import sniff, rdpcap, get_if_list, wrpcap
 from time import localtime, strftime
 

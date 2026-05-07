@@ -1,3 +1,13 @@
+import sys
+
+# On non-Windows builds scapy's __init__ tries to load scapy.arch.windows.
+# Stub it before anything imports scapy. Must run at the very top of the
+# entry point — PyInstaller's static analyzer chokes if this lives in
+# analyze.py at module top-level (silently drops the whole module).
+if sys.platform != "win32":
+    import types
+    sys.modules.setdefault("scapy.arch.windows", types.ModuleType("scapy.arch.windows"))
+
 from src import config
 from src.options import status_check, open, sniff, record, update_config, analyze
 
