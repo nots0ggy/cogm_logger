@@ -34,20 +34,29 @@ args = parser.parse_args()
 
 config.init("config.ini")
 
+# When -r is combined with -a, derive a pcap path alongside the .log
+# so the analyze pipeline can both parse live and persist the raw capture.
+# Bare -r (no -a) keeps its legacy behaviour via record.record().
+pcap_path = (
+    os.path.splitext(args.output)[0] + ".pcap"
+    if args.record and args.analyze
+    else None
+)
+
 if args.status:
     status_check.check_health()
     exit()
-elif args.record:
-    record.record(args.output)
-    exit()
-
 elif args.update:
     update_config.update_config()
 elif args.analyze and args.filename != None:
-    analyze.open_pcap(args.filename, args.output, args.ipFilter)
+    # Reading a pcap to write a pcap is nonsensical; force off.
+    analyze.open_pcap(args.filename, args.output, args.ipFilter, None)
     exit()
 elif args.analyze:
-    analyze.start_sniff(args.output, args.allInterfaces, args.ipFilter)
+    analyze.start_sniff(args.output, args.allInterfaces, args.ipFilter, pcap_path)
+    exit()
+elif args.record:
+    record.record(args.output)
     exit()
 elif args.filename != None:
     open.open_pcap(args.filename, args.output)

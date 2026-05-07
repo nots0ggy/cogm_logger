@@ -12,6 +12,7 @@ export type Config = {
 	all_interfaces: boolean;
 	ip_filter: boolean;
 	live_output_path: string;
+	record_pcap: boolean;
 };
 
 export type LogType = {
@@ -90,6 +91,9 @@ export async function get_config(): Promise<Config> {
 		if (parsed.include_characters === undefined) {
 			parsed.include_characters = true;
 		}
+		if (parsed.record_pcap === undefined) {
+			parsed.record_pcap = false;
+		}
 
 		return parsed;
 	} else {
@@ -104,7 +108,8 @@ export async function get_config(): Promise<Config> {
 			include_characters: true,
 			all_interfaces: true,
 			ip_filter: false,
-			live_output_path: ''
+			live_output_path: '',
+			record_pcap: false
 		};
 	}
 }

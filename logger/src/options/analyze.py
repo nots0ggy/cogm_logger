@@ -6,7 +6,7 @@ if sys.platform != "win32":
     import types
     sys.modules.setdefault("scapy.arch.windows", types.ModuleType("scapy.arch.windows"))
 
-from scapy.all import sniff, rdpcap, get_if_list
+from scapy.all import sniff, rdpcap, get_if_list, wrpcap
 from time import localtime, strftime
 
 
@@ -53,7 +53,7 @@ identifier_regex = r"[56][0-9a-f]0100[0-9a-f]{4}"
 name_regex = r"^[A-Z][a-zA-Z0-9_]{2,15}$"
 
 
-def package_handler(package, output, ip_filter=True):
+def package_handler(package, output, ip_filter=True, record_pcap_path=None):
     global last_payload
 
     if "IP" not in package:
@@ -78,6 +78,14 @@ def package_handler(package, output, ip_filter=True):
     # checkes if the packages comes from a tcp stream
     uses_tcp = "TCP" in package and hasattr(package["TCP"].payload, "load")
     if is_bdo_ip and uses_tcp:
+        # write the raw packet to pcap before parsing so we still capture
+        # subtype packets that don't yield a 5-name match
+        if record_pcap_path is not None:
+            try:
+                wrpcap(record_pcap_path, package, append=True)
+            except Exception as exc:
+                print(f"pcap write failed: {exc}", flush=True)
+
         # loads the payload as raw hex
         payload = bytes(package["TCP"].payload).hex()
 
@@ -144,7 +152,7 @@ def package_handler(package, output, ip_filter=True):
         last_payload = payload[position:]
 
 
-def open_pcap(file, output, ip_filter=True):
+def open_pcap(file, output, ip_filter=True, record_pcap_path=None):
     if file != None and not os.path.isfile(file):
         print("Invalid file", flush=True)
         return
@@ -154,12 +162,17 @@ def open_pcap(file, output, ip_filter=True):
         cap = rdpcap(file)
         index = 0
         for package in cap:
-            package_handler(package, output, ip_filter)
+            package_handler(package, output, ip_filter, record_pcap_path)
             if index % 10000 == 0:
                 print(f"{index}/{len(cap)} packages analyzed.", flush=True)
             index += 1
     else:
-        sniff(offline=file, filter="tcp", prn=package_handler, store=0)
+        sniff(
+            offline=file,
+            filter="tcp",
+            prn=lambda x: package_handler(x, output, ip_filter, record_pcap_path),
+            store=0,
+        )
 
     print(f"Logs saved under: {
           output}\nYou can close this window now.", flush=True)
@@ -177,9 +190,11 @@ def read_network_interfaces():
         return {iface: iface for iface in get_if_list()}
 
 
-def start_sniff(output, all_interfaces=True, ip_filter=True):
+def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=None):
     try:
         print("Reading Network...", flush=True)
+        if record_pcap_path is not None:
+            print(f"Saving pcap to {record_pcap_path}", flush=True)
         guidToNameDict = read_network_interfaces()
         intfList = get_if_list()
         namesAllowedList = [guidToNameDict.get(e) for e in intfList]
@@ -187,7 +202,7 @@ def start_sniff(output, all_interfaces=True, ip_filter=True):
 
         sniff(
             filter="tcp",
-            prn=lambda x: package_handler(x, output, ip_filter),
+            prn=lambda x: package_handler(x, output, ip_filter, record_pcap_path),
             store=0,
             iface=namesAllowedList if len(
                 namesAllowedList) > 0 and all_interfaces else None,
