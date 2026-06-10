@@ -11,6 +11,7 @@
 	import Button from '../../svelte-ui/elements/button.svelte';
 	import { app, os, storage } from '@neutralinojs/lib';
 	import { dev } from '$app/environment';
+	import { show_toast } from '../../svelte-ui/util';
 
 	let config: Config;
 
@@ -19,6 +20,15 @@
 	let live_output_path = '';
 	let personal_family_name = '';
 	let initial_load_done = false;
+
+	let cogm_token = '';
+	let cogm_url = 'https://cogm.app';
+	let cogm_guild = '';
+	// The token/url that produced the current cogm_guild label. The label is
+	// shown only while the live inputs still match these.
+	let verified_token = '';
+	let verified_url = '';
+	let verifying = false;
 
 	async function update_interface() {
 		if (config) {
@@ -53,6 +63,55 @@
 		await storage.setData(PERSONAL_FAMILY_NAME_KEY, personal_family_name).catch(() => null);
 	}
 
+	async function save_cogm_settings() {
+		if (!initial_load_done || !config) return;
+		config = await update_config({ ...config, cogm_token, cogm_url, cogm_guild });
+	}
+
+	// The "Linked guild" label is only trustworthy for the exact token/url
+	// that was verified. When either changes, drop the stale label so the
+	// user re-verifies before relying on it (and so a wrong guild is never
+	// shown as confirmed next to a different token).
+	function on_cogm_input_change() {
+		if (!initial_load_done) return;
+		if (cogm_token !== verified_token || cogm_url !== verified_url) {
+			cogm_guild = '';
+		}
+		save_cogm_settings();
+	}
+
+	async function verify_token() {
+		if (!initial_load_done || verifying) return;
+		verifying = true;
+		const base = (cogm_url || 'https://cogm.app').replace(/\/$/, '');
+		try {
+			const res = await fetch(`${base}/api/logger/verify`, {
+				headers: { Authorization: `Bearer ${cogm_token}` }
+			});
+			if (res.ok) {
+				const data = await res.json();
+				cogm_guild = data.guild?.name || '';
+				verified_token = cogm_token;
+				verified_url = cogm_url;
+				config = await update_config({ ...config, cogm_token, cogm_url, cogm_guild });
+				show_toast(`Token valid. Uploads go to ${cogm_guild}.`, 'success');
+			} else {
+				cogm_guild = '';
+				let msg = 'Invalid or revoked token';
+				try {
+					const data = await res.json();
+					if (data?.error) msg = data.error;
+				} catch {}
+				config = await update_config({ ...config, cogm_token, cogm_url, cogm_guild });
+				show_toast(msg, 'error');
+			}
+		} catch {
+			show_toast('Could not reach CoGM', 'error');
+		} finally {
+			verifying = false;
+		}
+	}
+
 	$: {
 		ip_filter;
 		if (initial_load_done) update_ip_filter();
@@ -63,6 +122,12 @@
 		persist_family_name();
 	}
 
+	$: {
+		cogm_token;
+		cogm_url;
+		on_cogm_input_change();
+	}
+
 	onMount(async () => {
 		config = await get_config();
 		selected_interface =
@@ -70,6 +135,13 @@
 		ip_filter = config.ip_filter === true || config.ip_filter === undefined ? true : false;
 		live_output_path = config.live_output_path || '';
 		personal_family_name = (await storage.getData(PERSONAL_FAMILY_NAME_KEY).catch(() => '')) || '';
+		cogm_token = config.cogm_token || '';
+		cogm_url = config.cogm_url || 'https://cogm.app';
+		cogm_guild = config.cogm_guild || '';
+		// Trust the stored guild label for the stored token/url it was saved
+		// against; editing either afterwards clears it via on_cogm_input_change.
+		verified_token = cogm_token;
+		verified_url = cogm_url;
 		initial_load_done = true;
 	});
 
@@ -156,6 +228,29 @@
 			</div>
 		</div>
 
+		<!-- COGM -->
+		<div class="divider-top">
+			<span class="heading-h2">CoGM</span>
+			<div class="mt-3">
+				<p class="text-foreground">Token</p>
+				<p class="text-caption">Upload logs to your CoGM community.</p>
+				<div class="flex gap-2 items-center mt-2">
+					<input
+						type="password"
+						class="flex-1 min-w-0 bg-background border border-gray-700 rounded px-2 py-1.5 text-foreground text-sm"
+						placeholder="Paste your CoGM upload token"
+						bind:value={cogm_token}
+					/>
+					<Button size="sm" on:click={verify_token} disabled={!cogm_token || verifying}>
+						{verifying ? 'Verifying...' : 'Verify'}
+					</Button>
+				</div>
+				{#if cogm_guild && cogm_token === verified_token && cogm_url === verified_url}
+					<p class="text-caption mt-1">Linked guild: {cogm_guild}</p>
+				{/if}
+			</div>
+		</div>
+
 		<!-- ADVANCED -->
 		<details class="divider-top group">
 			<summary class="cursor-pointer flex items-center justify-between list-none">
@@ -169,6 +264,15 @@
 			<p class="text-caption mt-2">
 				Dev Mode opens the WebView inspector. Browser Mode runs the UI in your default browser.
 			</p>
+			<div class="mt-3">
+				<p class="text-foreground text-sm">CoGM server</p>
+				<p class="text-caption">Target server for uploads. Change only for local development.</p>
+				<input
+					class="w-full mt-2 bg-background border border-gray-700 rounded px-2 py-1.5 text-foreground text-sm tabular-nums"
+					placeholder="https://cogm.app"
+					bind:value={cogm_url}
+				/>
+			</div>
 		</details>
 	</div>
 </div>

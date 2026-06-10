@@ -13,6 +13,9 @@ export type Config = {
 	ip_filter: boolean;
 	live_output_path: string;
 	record_pcap: boolean;
+	cogm_url: string;
+	cogm_token: string;
+	cogm_guild: string;
 };
 
 export type LogType = {
@@ -94,6 +97,15 @@ export async function get_config(): Promise<Config> {
 		if (parsed.record_pcap === undefined) {
 			parsed.record_pcap = false;
 		}
+		if (parsed.cogm_url === undefined) {
+			parsed.cogm_url = 'https://cogm.app';
+		}
+		if (parsed.cogm_token === undefined) {
+			parsed.cogm_token = '';
+		}
+		if (parsed.cogm_guild === undefined) {
+			parsed.cogm_guild = '';
+		}
 
 		return parsed;
 	} else {
@@ -109,7 +121,10 @@ export async function get_config(): Promise<Config> {
 			all_interfaces: true,
 			ip_filter: false,
 			live_output_path: '',
-			record_pcap: false
+			record_pcap: false,
+			cogm_url: 'https://cogm.app',
+			cogm_token: '',
+			cogm_guild: ''
 		};
 	}
 }

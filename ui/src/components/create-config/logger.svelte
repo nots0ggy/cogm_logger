@@ -3,10 +3,11 @@
 	import { open_save_location } from '../../logic/file';
 	import LoadingIndicator from '../../svelte-ui/elements/loading-indicator.svelte';
 	import IoMdSettings from 'svelte-icons/io/IoMdSettings.svelte';
-	import { find_all_indicies } from '../../svelte-ui/util';
+	import { find_all_indicies, show_toast } from '../../svelte-ui/util';
 	import Button from '../../svelte-ui/elements/button.svelte';
 	import Checkbox from '../../svelte-ui/elements/checkbox.svelte';
 	import ConfigModal from './config.modal.svelte';
+	import CogmUploadModal from '../cogm-upload-modal.svelte';
 	import {
 		update_config,
 		type Config,
@@ -385,6 +386,15 @@
 	function handle_personal_family_name_input(e: Event) {
 		update_personal_family_name((e.currentTarget as HTMLInputElement).value);
 	}
+
+	async function open_cogm_upload() {
+		const cfg = await get_config();
+		if (!cfg.cogm_token) {
+			show_toast('Set your CoGM token in Settings first', 'error');
+			return;
+		}
+		ModalManager.open(CogmUploadModal, { logs_string: get_logs_string() });
+	}
 </script>
 
 {#if logs.length > 0}
@@ -591,5 +601,6 @@
 	<div class="fixed bottom-4 left-0 right-0 flex gap-2 justify-center">
 		<Button class="w-32" on:click={upload} {disabled}>Upload</Button>
 		<Button class="w-32" on:click={save_logs} color="secondary" {disabled}>Save</Button>
+		<Button class="w-36" on:click={open_cogm_upload} color="secondary" {disabled}>Upload to CoGM</Button>
 	</div>
 </div>

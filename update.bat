@@ -11,7 +11,7 @@ REM Save the version number argument to a variable
 set "VERSION=%~1"
 
 REM GitHub repository details
-set "REPO_OWNER=sch-28"
+set "REPO_OWNER=nots0ggy"
 set "REPO_NAME=ikusa_logger"
 set "ASSET_NAME=ikusa-logger-installer.exe"
 
@@ -21,8 +21,10 @@ set "TEMP_DIR=%TEMP%\%RANDOM%"
 mkdir "%TEMP_DIR%"
 set "EXECUTABLE_PATH=%TEMP_DIR%\%ASSET_NAME%"
 
-REM Download the release asset from GitHub
-set "DOWNLOAD_URL=https://github.com/%REPO_OWNER%/%REPO_NAME%/releases/download/%VERSION%/%ASSET_NAME%"
+REM Download the release asset from GitHub. Releases are tagged with a
+REM leading "v" (v1.9.0); the manifest passes the bare version (1.9.0), so
+REM prefix it here to match the tag.
+set "DOWNLOAD_URL=https://github.com/%REPO_OWNER%/%REPO_NAME%/releases/download/v%VERSION%/%ASSET_NAME%"
 echo Downloading %ASSET_NAME% from %DOWNLOAD_URL%...
 curl -L -o "%EXECUTABLE_PATH%" "%DOWNLOAD_URL%" || (
     echo Failed to download %ASSET_NAME%
