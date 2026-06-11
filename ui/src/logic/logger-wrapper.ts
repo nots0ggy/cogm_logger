@@ -5,12 +5,21 @@ function handle_process(evt: CustomEvent) {
 	if (logger && logger.id == evt.detail.id) {
 		switch (evt.detail.action) {
 			case 'stdOut':
-				console.log(evt.detail.data.trim());
-				callback?.(evt.detail.data.trim(), 'running');
+				// Neutralino batches stdout, so one event can carry several
+				// newline-joined log lines during a kill burst. Each consumer
+				// parses a single comma record per call and drops anything
+				// that isn't exactly 8 fields, so split here and deliver one
+				// line at a time or whole bursts get silently lost.
+				for (const line of evt.detail.data.split('\n')) {
+					const trimmed = line.trim();
+					if (!trimmed) continue;
+					console.log(trimmed);
+					callback?.(trimmed, 'running');
+				}
 				break;
 			case 'stdErr':
 				alert(
-					'Something went wrong. Please contact me on discord and send the following error message:\n\n' +
+					'Something went wrong. Please report this in the CoGM support server with the following error message:\n\n' +
 						evt.detail.data
 				);
 				console.error(evt.detail.data);

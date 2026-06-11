@@ -12,8 +12,8 @@ set "VERSION=%~1"
 
 REM GitHub repository details
 set "REPO_OWNER=nots0ggy"
-set "REPO_NAME=ikusa_logger"
-set "ASSET_NAME=ikusa-logger-installer.exe"
+set "REPO_NAME=cogm_logger"
+set "ASSET_NAME=cogm-logger-installer.exe"
 
 
 REM Temporary location to save the downloaded file

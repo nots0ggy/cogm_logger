@@ -172,8 +172,7 @@ def open_pcap(file, output, ip_filter=True, record_pcap_path=None):
             store=0,
         )
 
-    print(f"Logs saved under: {
-          output}\nYou can close this window now.", flush=True)
+    print(f"Logs saved under: {output}\nYou can close this window now.", flush=True)
 
 
 def read_network_interfaces():
