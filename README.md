@@ -40,8 +40,27 @@ If you noticed that you have chosen the wrong name order, you can open the `.log
 
 https://github.com/sch-28/ikusa_logger/assets/42447473/ebcd67f0-c43a-4d12-b38d-79a7542e92ed
 
+## Protocol research: full payload capture
+The normal logger keeps only a 300-byte window around the combat-log
+identifier and pulls out four fields. To study the rest of the protocol
+(gear, class, damage, position, objectives), the capture engine has a full
+mode that records the entire TCP payload of every packet from BDO's servers,
+losslessly. Run the bundled logger exe directly:
+
+```
+logger.exe -F -o captures/war.log
+```
+
+This writes two files alongside each other:
+- `war.pcap` — full packets, open in Wireshark or read with scapy
+- `war.jsonl` — one line per packet: `{time, src, dst, sport, dport, seq, len, hex}`,
+  for grepping and diffing payloads to find field offsets
+
+It captures the same unencrypted server traffic the combat logger already
+reads, just in full. It does not touch live combat logging.
+
 ## Startup Issue
-If you are unable to start the regular ikusa-logger. Try to start it using the `--mode=browser` argument.
+If you are unable to start the regular logger, try starting it with the `--mode=browser` argument.
 
 ## Need help?
 For CoGM upload questions, join the [CoGM support server](https://discord.gg/rC4JEjEgnh).
