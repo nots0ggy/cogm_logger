@@ -1,9 +1,11 @@
-# Ikusa Logger
-A tool for Black Desert Online to log combat messages.
+# CoGM Logger
+A tool for Black Desert Online to log combat messages, with direct upload to [CoGM](https://cogm.app) war analytics.
+
+Made from [Ikusa Logger](https://github.com/sch-28/ikusa_logger), by [sch-28](https://github.com/sch-28) (ORACLE#7672). The capture engine, config calibration, and log format are his work. This fork adds the CoGM upload integration and CoGM branding.
 
 https://user-images.githubusercontent.com/42447473/184521641-e66a6bc4-191f-4c60-ae56-5172b052ec09.mp4
 
-Visualize your captured logs with this [website](https://github.com/sch-28/ikusa).
+Visualize your captured logs with sch-28's [ikusa website](https://github.com/sch-28/ikusa), or upload them straight to your guild's [CoGM](https://cogm.app) event log from the app.
 
 ## Prerequisites
 
@@ -42,4 +44,5 @@ https://github.com/sch-28/ikusa_logger/assets/42447473/ebcd67f0-c43a-4d12-b38d-7
 If you are unable to start the regular ikusa-logger. Try to start it using the `--mode=browser` argument.
 
 ## Need help?
-If you have any questions, feel free to add me on Discord: sch.28
+For CoGM upload questions, join the [CoGM support server](https://discord.gg/rC4JEjEgnh).
+For the original logger, sch-28 is on Discord: sch.28

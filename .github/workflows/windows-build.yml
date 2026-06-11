@@ -108,8 +108,8 @@ jobs:
             - name: Upload installer
               uses: actions/upload-artifact@v4
               with:
-                  name: ikusa-logger-installer
-                  path: Output/ikusa-logger-installer.exe
+                  name: cogm-logger-installer
+                  path: Output/cogm-logger-installer.exe
                   if-no-files-found: error
                   retention-days: 30
 
@@ -119,6 +119,6 @@ jobs:
               with:
                   files: |
                       dist/ikusa-logger-portable.zip
-                      Output/ikusa-logger-installer.exe
+                      Output/cogm-logger-installer.exe
                   draft: false
                   prerelease: false

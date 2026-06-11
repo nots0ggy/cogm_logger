@@ -116,18 +116,18 @@
 
 <!-- Footer -->
 <div class="mt-auto flex items-center justify-between text-caption px-1 pb-2">
-	<span>Made by <b class="text-foreground">ORACLE#7672</b></span>
+	<span>Made from Ikusa Logger, by <b class="text-foreground">ORACLE#7672</b></span>
 	<div class="flex items-center gap-3">
 		<button
 			class="text-foreground-secondary hover:text-foreground transition-colors"
-			on:click={() => os.open('https://discord.gg/nXSYGnxXJ5')}
+			on:click={() => os.open('https://discord.gg/rC4JEjEgnh')}
 			aria-label="Discord"
 		>
 			<Icon icon={FaDiscord} />
 		</button>
 		<button
 			class="text-foreground-secondary hover:text-foreground transition-colors"
-			on:click={() => os.open('https://github.com/sch-28/ikusa')}
+			on:click={() => os.open('https://github.com/nots0ggy/cogm_logger')}
 			aria-label="GitHub"
 		>
 			<Icon icon={GoMarkGithub} />

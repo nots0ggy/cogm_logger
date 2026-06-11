@@ -26,7 +26,7 @@
 		</button>
 	{/if}
 
-	<a href={'/'} class="heading-display text-gold leading-none no-underline">Ikusa Logger</a>
+	<a href={'/'} class="heading-display text-gold leading-none no-underline">CoGM Logger</a>
 	<span class="text-caption tabular-nums leading-none">{version}</span>
 
 	<div class="ml-auto flex items-center gap-2">
