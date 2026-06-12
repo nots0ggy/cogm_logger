@@ -75,6 +75,16 @@ jobs:
                       Copy-Item -Path "update.bat" -Destination "dist\cogm-logger\update.bat" -Force
                   }
 
+            - name: Stage config.ini into dist
+              shell: pwsh
+              run: |
+                  # Bundle the packet config so the status check stops flagging a
+                  # missing config. The live capture path is regex-based and
+                  # ignores these offsets, so shipping a snapshot is harmless.
+                  if (Test-Path "config.ini") {
+                      Copy-Item -Path "config.ini" -Destination "dist\cogm-logger\config.ini" -Force
+                  }
+
             - name: Verify dist contents
               shell: pwsh
               run: |

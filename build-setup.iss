@@ -41,6 +41,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: ".\dist\cogm-logger\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: ".\dist\cogm-logger\update.bat"; DestDir: "{app}"; Flags: ignoreversion
+Source: ".\dist\cogm-logger\config.ini"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: ".\dist\cogm-logger\resources.neu"; DestDir: "{app}"; Flags: ignoreversion
 Source: ".\dist\cogm-logger\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: ".\logger\icon\{#MyAppIcoName}"; DestDir: "{app}"; Flags: ignoreversion

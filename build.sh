@@ -30,6 +30,8 @@ log "Copying logger files..."
 cd .. || error_exit "Failed to return to parent directory."
 mkdir -p dist/cogm-logger/logger
 cp -r logger/dist/logger/* dist/cogm-logger/logger/ || error_exit "Failed to copy logger files."
+# Bundle the packet config so the status check finds it (live capture ignores it).
+[ -f config.ini ] && cp config.ini dist/cogm-logger/config.ini
 
 
 # Install Dependencies for the Frontend
