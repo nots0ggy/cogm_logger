@@ -5,6 +5,7 @@
 	import { onMount } from 'svelte';
 	import LoadingIndicator from '../svelte-ui/elements/loading-indicator.svelte';
 	import { check_status, type LoggerStatus } from '../logic/logger-status';
+	import { find_last_session } from '../logic/recover';
 	import GoMarkGithub from 'svelte-icons/go/GoMarkGithub.svelte';
 	import Icon from '../svelte-ui/elements/icon.svelte';
 	import FaDiscord from 'svelte-icons/fa/FaDiscord.svelte';
@@ -15,6 +16,7 @@
 	let update_available = false;
 	let full_update_available = false;
 	let version = NL_APPVERSION;
+	let recoverable_logs = 0;
 
 	async function check_for_updates() {
 		let url =
@@ -56,6 +58,12 @@
 			loading = true;
 			await check_for_updates().catch((e) => console.error(e));
 			status = await check_status();
+			// Surface a recover entry if a crash left an unsaved session.
+			await find_last_session()
+				.then((s) => {
+					recoverable_logs = s?.logs.length ?? 0;
+				})
+				.catch(() => {});
 		} catch (e) {
 			console.error(e);
 		}
@@ -98,6 +106,17 @@
 
 	<!-- Primary CTA -->
 	<Button class="w-full h-12" on:click={() => goto('/record')}>Record</Button>
+
+	<!-- Recover banner: only when an unsaved session is on disk -->
+	{#if recoverable_logs > 0}
+		<button
+			class="flex items-center justify-between gap-2 h-11 px-4 rounded-md border border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10 transition-colors"
+			on:click={() => goto('/recover')}
+		>
+			<span class="text-caption text-emerald-300 font-semibold">Recover last session</span>
+			<span class="text-caption text-foreground-secondary">{recoverable_logs} logs found</span>
+		</button>
+	{/if}
 
 	<!-- Secondary CTAs -->
 	<div class="grid grid-cols-2 gap-3">

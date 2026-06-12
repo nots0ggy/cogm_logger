@@ -1,5 +1,5 @@
 import { dev } from '$app/environment';
-import { events, os } from '@neutralinojs/lib';
+import { app, events, os } from '@neutralinojs/lib';
 
 function handle_process(evt: CustomEvent) {
 	if (logger && logger.id == evt.detail.id) {
@@ -151,5 +151,49 @@ export async function stop_logger() {
 		} catch (e) {
 			console.error(e);
 		}
+	}
+}
+
+/**
+ * Restart the Npcap capture driver. After an unclean PC shutdown the driver
+ * service commonly wedges: the files are still installed so the app thinks
+ * Npcap is present, but the adapter won't open and capture fails. Restarting
+ * the service clears that without a full reboot. Requires elevation (the
+ * UAC prompt is expected). The service is "npcap", or "npf" when installed
+ * in WinPcap-compatible mode, so we cycle both. Fail-safe: if the user
+ * denies UAC or the command errors, the app keeps running unchanged.
+ */
+export async function restart_capture_driver(): Promise<boolean> {
+	if (NL_OS !== 'Windows') return false;
+	try {
+		const cmd =
+			'net stop npcap & net start npcap & net stop npf & net start npf';
+		const ps = `Start-Process cmd -Verb RunAs -ArgumentList '/c ${cmd}'`;
+		await os.execCommand(`powershell -NoProfile -Command "${ps}"`);
+		// The elevated cmd runs detached; give the service a moment to settle.
+		await new Promise((r) => setTimeout(r, 2500));
+		return true;
+	} catch (e) {
+		console.error('restart_capture_driver failed', e);
+		return false;
+	}
+}
+
+/**
+ * Relaunch the app elevated. For the access-denied capture failure (Npcap
+ * installed admin-only, app running non-elevated). Starts an elevated copy
+ * via UAC and exits this one. Fail-safe: if UAC is denied or the spawn
+ * errors, this instance keeps running.
+ */
+export async function relaunch_as_admin(): Promise<void> {
+	if (NL_OS !== 'Windows') return;
+	try {
+		const exe = 'cogm-logger-win_x64.exe';
+		await os.execCommand(
+			`powershell -NoProfile -Command "Start-Process '${exe}' -Verb RunAs"`
+		);
+		await app.exit();
+	} catch (e) {
+		console.error('relaunch_as_admin failed', e);
 	}
 }

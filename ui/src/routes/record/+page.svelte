@@ -1,10 +1,18 @@
 <script lang="ts">
-	import { type LoggerCallback, start_logger, stop_logger } from '../../logic/logger-wrapper';
+	import {
+		type LoggerCallback,
+		start_logger,
+		stop_logger,
+		restart_capture_driver,
+		relaunch_as_admin
+	} from '../../logic/logger-wrapper';
+	import { os } from '@neutralinojs/lib';
 	import { onDestroy, onMount } from 'svelte';
 	import Logger from '../../components/create-config/logger.svelte';
 	import { get_config, update_config, type Config, type LogType } from '../../components/create-config/config';
 	import { recording_state, recording_started_at, packets_seen } from '../../logic/recording-store';
 	import StatusDot from '../../components/status-dot.svelte';
+	import Button from '../../svelte-ui/elements/button.svelte';
 	import { goto } from '$app/navigation';
 
 	let logs: LogType[] = [];
@@ -13,6 +21,11 @@
 	let config: Config;
 	let now = Date.now();
 	let ticker: ReturnType<typeof setInterval>;
+
+	// Set when the capture engine reports a classified startup failure
+	// (CAPTURE_ERROR). Drives the recovery panel below.
+	let capture_error: { code: string; message: string } | null = null;
+	let recovering = false;
 
 	function build_flags(cfg: Config): string {
 		return (cfg.all_interfaces ? '-i' : '') +
@@ -41,6 +54,14 @@
 		// back to 'recording' after navigating away.
 		if (is_destroyed) return;
 		if (status === 'running') {
+			// Classified capture failure from the engine (npcap wedged, access
+			// denied, etc). Show the recovery panel instead of a dead retry.
+			if (data.startsWith('CAPTURE_ERROR|')) {
+				const parts = data.split('|');
+				capture_error = { code: parts[1] ?? 'UNKNOWN', message: parts.slice(2).join('|') };
+				recording_state.set('error');
+				return;
+			}
 			packets_seen.update((n) => n + 1);
 
 			const d = data.split(',');
@@ -53,6 +74,7 @@
 				if (retry_count > 0 || $recording_state !== 'recording') {
 					retry_count = 0;
 					recording_state.set('recording');
+					capture_error = null;
 				}
 				const new_log = {
 					identifier: d[0],
@@ -139,6 +161,62 @@
 		goto('/');
 	}
 
+	// Recovery actions for a classified capture failure.
+	function retry_capture() {
+		capture_error = null;
+		retry_count = 0;
+		recording_state.set('reconnecting');
+		start_logger(logger_callback, 'analyze', build_flags(config));
+	}
+
+	async function handle_restart_driver() {
+		recovering = true;
+		const ok = await restart_capture_driver();
+		recovering = false;
+		if (ok) {
+			retry_capture();
+		} else {
+			alert('Could not restart the capture driver. You may need to reboot.');
+		}
+	}
+
+	async function handle_install_npcap() {
+		await os.open('https://npcap.com/dist/npcap-1.78.exe');
+	}
+
+	const CAPTURE_ERROR_INFO: Record<string, { title: string; detail: string; action: 'driver' | 'admin' | 'npcap' | 'retry' }> = {
+		NPCAP_MISSING: {
+			title: 'Capture driver not installed',
+			detail: 'Npcap is required to read game traffic. Install it, then retry.',
+			action: 'npcap'
+		},
+		DRIVER_NOT_RESPONDING: {
+			title: "Capture driver isn't responding",
+			detail:
+				'This usually happens after a PC crash. Restarting the Npcap service clears it without a reboot.',
+			action: 'driver'
+		},
+		ACCESS_DENIED: {
+			title: 'Capture needs administrator rights',
+			detail: 'Run the app as administrator to capture packets.',
+			action: 'admin'
+		},
+		NO_INTERFACE: {
+			title: 'No network interface found',
+			detail: 'No usable network adapter was detected. Check your connection and retry.',
+			action: 'retry'
+		},
+		UNKNOWN: {
+			title: 'Capture failed to start',
+			detail: 'The capture engine reported an error.',
+			action: 'retry'
+		}
+	};
+
+	$: error_info = capture_error
+		? CAPTURE_ERROR_INFO[capture_error.code] ?? CAPTURE_ERROR_INFO.UNKNOWN
+		: null;
+
 	async function handle_pcap_toggle() {
 		if (config) {
 			await update_config(config);
@@ -202,6 +280,34 @@
 		<span class="text-caption text-gold ml-2">Restart capture to apply</span>
 	{/if}
 </div>
+{/if}
+
+<!-- Capture recovery panel -->
+{#if capture_error && error_info}
+	<div class="m-4 rounded-lg border border-rose-500/30 bg-rose-500/5 p-4 flex flex-col gap-3">
+		<div class="flex flex-col gap-1">
+			<span class="heading-h2 text-rose-300">{error_info.title}</span>
+			<span class="text-caption text-foreground-secondary">{error_info.detail}</span>
+		</div>
+		<div class="flex flex-wrap gap-2">
+			{#if error_info.action === 'driver'}
+				<Button on:click={handle_restart_driver} disabled={recovering}>
+					{recovering ? 'Restarting driver...' : 'Restart capture driver'}
+				</Button>
+			{:else if error_info.action === 'admin'}
+				<Button on:click={relaunch_as_admin}>Run as administrator</Button>
+			{:else if error_info.action === 'npcap'}
+				<Button on:click={handle_install_npcap}>Install Npcap</Button>
+			{/if}
+			<Button color="secondary" on:click={retry_capture}>Retry</Button>
+		</div>
+		{#if capture_error.message}
+			<details class="text-caption text-foreground-secondary">
+				<summary class="cursor-pointer">Technical details</summary>
+				<p class="mt-1 break-all font-mono text-xs">{capture_error.message}</p>
+			</details>
+		{/if}
+	</div>
 {/if}
 
 <!-- TODO: replace height={165} with get_remaining_height() from utils once utility exists -->
