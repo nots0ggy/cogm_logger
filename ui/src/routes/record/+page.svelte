@@ -120,6 +120,11 @@
 				alert('Error while reading network. Please report this in the CoGM support server.');
 			}
 		} else if (status === ('error' as any)) {
+			// A classified capture failure already raised the recovery panel, which
+			// owns the retry from here (its buttons call retry_capture). Don't also
+			// fire the legacy blind reconnect and alert: that just respawns into the
+			// same failure and oscillates the label and the alert.
+			if (capture_error) return;
 			console.error(data);
 			alert(
 				'An error occured while trying to start the logger. Error message: ' +
@@ -137,6 +142,9 @@
 				retry_count = 0;
 			}
 		} else if (status === 'terminated') {
+			// Same as the error branch: when the recovery panel is up, let it drive
+			// the retry instead of blindly respawning into the same failure.
+			if (capture_error) return;
 			if (!is_destroyed && retry_count < 3) {
 				recording_state.set('reconnecting');
 				start_logger(logger_callback, 'analyze', spawn_args());

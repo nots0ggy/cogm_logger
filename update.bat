@@ -26,7 +26,12 @@ REM leading "v" (v1.9.0); the manifest passes the bare version (1.9.0), so
 REM prefix it here to match the tag.
 set "DOWNLOAD_URL=https://github.com/%REPO_OWNER%/%REPO_NAME%/releases/download/v%VERSION%/%ASSET_NAME%"
 echo Downloading %ASSET_NAME% from %DOWNLOAD_URL%...
-curl -L -o "%EXECUTABLE_PATH%" "%DOWNLOAD_URL%" || (
+REM --fail makes curl exit non-zero on a 404 instead of writing the GitHub
+REM error page to the file and exiting 0. Without it, a manifest bump that
+REM lands before the release asset is published would leave us trying to run
+REM an HTML page as the installer. With it, a missing asset just cleans up and
+REM the existing install keeps working until the asset publishes.
+curl --fail -L -o "%EXECUTABLE_PATH%" "%DOWNLOAD_URL%" || (
     echo Failed to download %ASSET_NAME%
     goto :cleanup
 )

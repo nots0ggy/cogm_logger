@@ -166,8 +166,15 @@
 		// columns are still built for the view, and the next real save persists a
 		// full config.
 		if (!config) return;
+		// record_pcap is owned by the record page's full-capture toggle, not this
+		// editor, which has no UI for it. This editor loaded its config snapshot at
+		// mount; if the user flips the toggle after that, the snapshot is stale, and
+		// since update_config replaces the whole stored blob, writing it here would
+		// revert the toggle. Re-read just that field so we never clobber it.
+		const persisted = await get_config().catch(() => null);
 		config = {
 			...config,
+			...(persisted ? { record_pcap: persisted.record_pcap } : {}),
 			patch: get_date(),
 			identifier: identifier || config.identifier,
 			player_one: possible_name_offsets[player_one_index][name_indicies[player_one_index]].offset,
@@ -378,6 +385,10 @@
 		if (result.status === 200) {
 			const id = (await result.json()).id;
 			os.open(`${website}/wars?id=${id}`);
+			// The war is preserved on ikusa.site now, so drop the local recovery
+			// copy the same way Save and Upload to CoGM do. Only on success: a
+			// failed upload should keep the recovery file so the war isn't lost.
+			await clear_session();
 		} else {
 			console.error(result);
 		}
