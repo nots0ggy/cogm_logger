@@ -47,7 +47,7 @@
 
 	async function pick_live_output_path() {
 		const result = await os.showSaveDialog('Choose live output file location', {
-			defaultPath: live_output_path || 'ikusa_live.log',
+			defaultPath: live_output_path || 'cogm_live.log',
 			filters: [{ name: 'Log file', extensions: ['log'] }]
 		});
 		if (result) {
@@ -149,7 +149,7 @@
 	});
 
 	function get_binary_name() {
-		return NL_OS === 'Windows' ? 'ikusa-logger-win_x64.exe' : './ikusa-logger-linux_x64';
+		return NL_OS === 'Windows' ? 'cogm-logger-win_x64.exe' : './cogm-logger-linux_x64';
 	}
 
 	async function restart_dev() {

@@ -29,7 +29,7 @@ nodejs libcap python3 patchelf
 
 ## Usage
 1. Start the logger:
-   - Windows: `ikusa-logger-win_x64.exe` located in `/dist/ikusa-logger/`
+   - Windows: `cogm-logger-win_x64.exe` located in `/dist/cogm-logger/`
    - Linux: `start.sh`
 2. Click on the `Record` button
 3. After you are done recording, make sure to order the names of the players in the correct order!

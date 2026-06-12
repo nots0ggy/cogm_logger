@@ -2,9 +2,9 @@
 cd logger
 CALL install.bat
 
-:: Copy everything form logger/dist/logger to dist/ikusa-logger/logger/
+:: Copy everything form logger/dist/logger to dist/cogm-logger/logger/
 cd .. 
-xcopy logger\dist\logger dist\ikusa-logger\logger\ /E /Y
+xcopy logger\dist\logger dist\cogm-logger\logger\ /E /Y
 
 
 
@@ -19,4 +19,4 @@ cd ..
 CALL neu update
 CALL neu build
 
-echo Build completed. Compiled files are in dist/ikusa-logger/
+echo Build completed. Compiled files are in dist/cogm-logger/

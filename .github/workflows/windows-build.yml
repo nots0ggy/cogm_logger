@@ -50,8 +50,8 @@ jobs:
             - name: Copy logger output into dist
               shell: pwsh
               run: |
-                  New-Item -ItemType Directory -Force -Path "dist\ikusa-logger\logger" | Out-Null
-                  Copy-Item -Path "logger\dist\logger\*" -Destination "dist\ikusa-logger\logger\" -Recurse -Force
+                  New-Item -ItemType Directory -Force -Path "dist\cogm-logger\logger" | Out-Null
+                  Copy-Item -Path "logger\dist\logger\*" -Destination "dist\cogm-logger\logger\" -Recurse -Force
 
             - name: Install UI dependencies
               shell: pwsh
@@ -72,14 +72,14 @@ jobs:
               shell: pwsh
               run: |
                   if (Test-Path "update.bat") {
-                      Copy-Item -Path "update.bat" -Destination "dist\ikusa-logger\update.bat" -Force
+                      Copy-Item -Path "update.bat" -Destination "dist\cogm-logger\update.bat" -Force
                   }
 
             - name: Verify dist contents
               shell: pwsh
               run: |
-                  Write-Host "=== dist/ikusa-logger contents ==="
-                  Get-ChildItem -Recurse "dist\ikusa-logger" | Select-Object FullName, Length
+                  Write-Host "=== dist/cogm-logger contents ==="
+                  Get-ChildItem -Recurse "dist\cogm-logger" | Select-Object FullName, Length
 
             - name: Install Inno Setup
               shell: pwsh
@@ -95,13 +95,13 @@ jobs:
             - name: Zip portable build
               shell: pwsh
               run: |
-                  Compress-Archive -Path "dist\ikusa-logger\*" -DestinationPath "dist\ikusa-logger-portable.zip" -Force
+                  Compress-Archive -Path "dist\cogm-logger\*" -DestinationPath "dist\cogm-logger-portable.zip" -Force
 
             - name: Upload portable zip
               uses: actions/upload-artifact@v4
               with:
-                  name: ikusa-logger-portable
-                  path: dist/ikusa-logger-portable.zip
+                  name: cogm-logger-portable
+                  path: dist/cogm-logger-portable.zip
                   if-no-files-found: error
                   retention-days: 30
 
@@ -118,7 +118,7 @@ jobs:
               uses: softprops/action-gh-release@v2
               with:
                   files: |
-                      dist/ikusa-logger-portable.zip
+                      dist/cogm-logger-portable.zip
                       Output/cogm-logger-installer.exe
                   draft: false
                   prerelease: false

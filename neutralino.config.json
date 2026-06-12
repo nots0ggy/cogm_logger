@@ -36,7 +36,7 @@
 		}
 	},
 	"cli": {
-		"binaryName": "ikusa-logger",
+		"binaryName": "cogm-logger",
 		"resourcesPath": "/ui/build/",
 		"extensionsPath": "/extensions/",
 		"binaryVersion": "5.6.0",

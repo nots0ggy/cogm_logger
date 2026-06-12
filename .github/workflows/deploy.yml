@@ -31,7 +31,7 @@ jobs:
 
             - name: Copy resources.neu to version folder
               run: |
-                  cp ./dist/ikusa-logger/resources.neu ./version/resources.neu
+                  cp ./dist/cogm-logger/resources.neu ./version/resources.neu
             - name: Adjust version number
               run: |
                   VERSION=$(grep -oP '(?<="version": ")[^"]*' neutralino.config.json)

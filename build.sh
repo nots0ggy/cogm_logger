@@ -25,11 +25,11 @@ log "Building the logger..."
 } || error_exit "PyInstaller build failed."
 
 
-# Copy everything from logger/dist/logger to dist/ikusa-logger/logger/
+# Copy everything from logger/dist/logger to dist/cogm-logger/logger/
 log "Copying logger files..."
 cd .. || error_exit "Failed to return to parent directory."
-mkdir -p dist/ikusa-logger/logger
-cp -r logger/dist/logger/* dist/ikusa-logger/logger/ || error_exit "Failed to copy logger files."
+mkdir -p dist/cogm-logger/logger
+cp -r logger/dist/logger/* dist/cogm-logger/logger/ || error_exit "Failed to copy logger files."
 
 
 # Install Dependencies for the Frontend
@@ -49,12 +49,12 @@ neu update || error_exit "Neutralino.js update failed."
 neu build || error_exit "Neutralino.js build failed."
 
 # Patch ELF interpreter if the system uses a non-/lib64 path (e.g. Ubuntu/Debian/Pop!_OS)
-INTERP=$(patchelf --print-interpreter ./dist/ikusa-logger/logger/logger 2>/dev/null)
+INTERP=$(patchelf --print-interpreter ./dist/cogm-logger/logger/logger 2>/dev/null)
 if [ -n "$INTERP" ] && [ ! -e "$INTERP" ]; then
     SYSTEM_INTERP=$(find /lib /lib64 /usr/lib -name "ld-linux-x86-64.so.2" 2>/dev/null | head -n1)
     if [ -n "$SYSTEM_INTERP" ]; then
         log "Patching ELF interpreter: $INTERP -> $SYSTEM_INTERP"
-        patchelf --set-interpreter "$SYSTEM_INTERP" ./dist/ikusa-logger/logger/logger || error_exit "patchelf failed. Install it with: sudo apt install patchelf"
+        patchelf --set-interpreter "$SYSTEM_INTERP" ./dist/cogm-logger/logger/logger || error_exit "patchelf failed. Install it with: sudo apt install patchelf"
     else
         error_exit "ELF interpreter '$INTERP' not found on this system and no replacement located. Install patchelf and check your libc."
     fi
@@ -62,8 +62,8 @@ fi
 
 # allow scapy to read network
 log "Setting capabilities for the logger binary..."
-sudo setcap cap_net_raw=eip ./dist/ikusa-logger/ikusa-logger-linux_x64
-sudo setcap cap_net_raw=eip ./dist/ikusa-logger/logger/logger
+sudo setcap cap_net_raw=eip ./dist/cogm-logger/cogm-logger-linux_x64
+sudo setcap cap_net_raw=eip ./dist/cogm-logger/logger/logger
 
-log "Build completed. Compiled files are in dist/ikusa-logger/"
+log "Build completed. Compiled files are in dist/cogm-logger/"
 log "All tasks completed successfully."

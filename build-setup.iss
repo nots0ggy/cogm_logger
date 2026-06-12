@@ -5,7 +5,7 @@
 #define MyAppVersion "1.9.0"
 #define MyAppPublisher "CoGM"
 #define MyAppURL "https://cogm.app/"
-#define MyAppExeName "ikusa-logger-win_x64.exe"
+#define MyAppExeName "cogm-logger-win_x64.exe"
 #define MyAppIcoName "icon-2.ico"
 
 [Setup]
@@ -39,12 +39,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: ".\dist\ikusa-logger\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: ".\dist\ikusa-logger\update.bat"; DestDir: "{app}"; Flags: ignoreversion
-Source: ".\dist\ikusa-logger\resources.neu"; DestDir: "{app}"; Flags: ignoreversion
-Source: ".\dist\ikusa-logger\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: ".\dist\cogm-logger\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: ".\dist\cogm-logger\update.bat"; DestDir: "{app}"; Flags: ignoreversion
+Source: ".\dist\cogm-logger\resources.neu"; DestDir: "{app}"; Flags: ignoreversion
+Source: ".\dist\cogm-logger\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: ".\logger\icon\{#MyAppIcoName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: ".\dist\ikusa-logger\logger\*"; DestDir: "{app}\logger\"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: ".\dist\cogm-logger\logger\*"; DestDir: "{app}\logger\"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]
