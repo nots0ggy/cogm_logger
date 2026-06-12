@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { type LoggerCallback, start_logger } from '../../logic/logger-wrapper';
+	import { type LoggerCallback, start_logger, stop_logger } from '../../logic/logger-wrapper';
 	import { onDestroy, onMount } from 'svelte';
 	import Logger from '../../components/create-config/logger.svelte';
 	import { get_config, update_config, type Config, type LogType } from '../../components/create-config/config';
@@ -40,6 +40,15 @@
 
 			const d = data.split(',');
 			if (d.length === 8 && !data.includes('Network Interfaces:')) {
+				// A parsed log line means capture is healthy: clear any
+				// reconnect debt so transient blips spread across a long war
+				// don't accumulate to the 3-strike permanent failure, and
+				// restore the live label after a successful reconnect (it
+				// otherwise sticks on RECONNECTING forever).
+				if (retry_count > 0 || $recording_state !== 'recording') {
+					retry_count = 0;
+					recording_state.set('recording');
+				}
 				const new_log = {
 					identifier: d[0],
 					time: d[1],
@@ -65,7 +74,7 @@
 				logs.push(new_log);
 				logs = logs;
 			} else if (data.includes('Error while reading network.')) {
-				alert('Error while reading network. Please notify me on Discord.');
+				alert('Error while reading network. Please report this in the CoGM support server.');
 			}
 		} else if (status === ('error' as any)) {
 			console.error(data);
@@ -113,6 +122,9 @@
 		is_destroyed = true;
 		recording_state.set('idle');
 		clearInterval(ticker);
+		// Stop the sniffer when leaving the page; it otherwise keeps running
+		// in the background and its stale events pop an "Invalid Logger" alert.
+		stop_logger();
 	});
 
 	function handle_stop() {

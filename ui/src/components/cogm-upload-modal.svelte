@@ -74,7 +74,22 @@
 		return { isCapped: false, isT1: false };
 	}
 
+	// Synchronous re-entry guard. do_upload awaits get_config before it sets
+	// state to 'uploading', so without this a fast double-click fires two
+	// POSTs and creates two duplicate events in CoGM.
+	let in_flight = false;
+
 	async function do_upload() {
+		if (in_flight) return;
+		in_flight = true;
+		try {
+			await run_upload();
+		} finally {
+			in_flight = false;
+		}
+	}
+
+	async function run_upload() {
 		const config = await get_config();
 		if (!config.cogm_token) {
 			show_toast('Set your CoGM token in Settings first', 'error');
@@ -127,9 +142,26 @@
 			return;
 		}
 
-		const post_data = await post_res.json();
-		const job_id: string = post_data.jobId;
+		// A 200 with a non-JSON body (proxy/edge HTML, empty response) would
+		// throw here and leave the modal wedged on "Uploading..." with no way
+		// back. The event is already created server-side, so report and stop.
+		let post_data: { jobId?: string; eventUrl?: string };
+		try {
+			post_data = await post_res.json();
+		} catch {
+			state = 'form';
+			form_error = 'CoGM returned an unexpected response. Check the dashboard.';
+			show_toast('Upload failed', 'error');
+			return;
+		}
+		const job_id: string | undefined = post_data.jobId;
 		event_url = post_data.eventUrl || '';
+		if (!job_id) {
+			state = 'form';
+			form_error = 'CoGM did not return a job id. Check the dashboard.';
+			show_toast('Upload failed', 'error');
+			return;
+		}
 
 		// The user may have closed the modal while the POST was in flight.
 		// The event is already created server-side (Open in CoGM will work

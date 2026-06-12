@@ -105,3 +105,35 @@ export async function start_logger(
 	callback = clb;
 	events.on('spawnedProcess', handle_process);
 }
+
+/**
+ * Stop a running capture and detach. Without this, leaving the record page
+ * left the Python sniffer running in the background, and its later process
+ * events fired the stale-id "Invalid Logger" alert. Safe to call when
+ * nothing is running. Detaches the callback first so the exit event this
+ * triggers doesn't reach a torn-down page.
+ */
+export async function stop_logger() {
+	callback = null;
+	events.off('spawnedProcess', handle_process);
+	const current = logger;
+	logger = null;
+	if (current) {
+		try {
+			await os.updateSpawnedProcess(current.id, 'exit');
+		} catch (e) {
+			console.error(e);
+		}
+	}
+	// Belt-and-suspenders on Windows: the spawned-process exit can miss a
+	// child that detached from the parent handle. No-op (and harmless error)
+	// on other platforms.
+	if (NL_OS === 'Windows') {
+		try {
+			const kill_timeout = new Promise((resolve) => setTimeout(() => resolve('timeout'), 1000));
+			await Promise.race([os.execCommand('taskkill /F /IM logger.exe'), kill_timeout]);
+		} catch (e) {
+			console.error(e);
+		}
+	}
+}

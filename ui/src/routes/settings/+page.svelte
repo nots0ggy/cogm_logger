@@ -32,13 +32,16 @@
 
 	async function update_interface() {
 		if (config) {
-			await update_config({ ...config, all_interfaces: selected_interface == 0 });
+			// Reassign config, like every other updater here. Without it the
+			// local copy stays stale and the next save spreads the old value,
+			// silently reverting this toggle.
+			config = await update_config({ ...config, all_interfaces: selected_interface == 0 });
 		}
 	}
 
 	async function update_ip_filter() {
 		if (config) {
-			await update_config({ ...config, ip_filter });
+			config = await update_config({ ...config, ip_filter });
 		}
 	}
 
