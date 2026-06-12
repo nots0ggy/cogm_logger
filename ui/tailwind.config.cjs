@@ -10,28 +10,30 @@ const config = {
 	  xs: '500px'
 	 },
 	 colors: {
+	  // CoGM dark dashboard surfaces: near-black bg, raised panel.
 	  background: {
-	   DEFAULT: 'rgb(28,28,28)',
-	   secondary: '#1f1f1f'
+	   DEFAULT: '#0c0d12',
+	   secondary: '#13141a'
 	  },
 	  foreground: {
-	   DEFAULT: 'rgb(255, 255, 255, 0.9)',
-	   secondary: 'rgb(255, 255, 255, 0.65)'
+	   DEFAULT: '#e7e8ef',
+	   secondary: '#a6a7b8'
 	  },
+	  // Token name kept as "gold"; retuned to CoGM's amber brand so every
+	  // accent (buttons, highlights, REC chrome) shifts to the CoGM vibe.
 	  gold: {
-	   DEFAULT: '#f5cd40',
-	   muted: '#bd8e28',
-	   50: '#fbfaf3',
-	   100: '#f9efb8',
-	   200: '#f1dc7b',
-	   300: '#f5cd40',
-	   400: '#bd8e28',
-	   500: '#9e6f14',
-  
-	   600: '#81560d',
-	   700: '#63400c',
-	   800: '#442c0b',
-	   900: '#2e1c08'
+	   DEFAULT: '#f59e0b',
+	   muted: '#b45309',
+	   50: '#fffbeb',
+	   100: '#fef3c7',
+	   200: '#fcd34d',
+	   300: '#f59e0b',
+	   400: '#d97706',
+	   500: '#b45309',
+	   600: '#92400e',
+	   700: '#78350f',
+	   800: '#451a03',
+	   900: '#292012'
 	  },
 	  yellow: {
 	   50: '#faf9f1',
@@ -144,11 +146,11 @@ const config = {
 	   900: '#3b160e'
 	  },
 	  status: {
-	   idle: '#6b7280',
-	   recording: '#ef4444',
-	   ok: '#27ac9d',
-	   warn: '#f5cd40',
-	   error: '#ef4444'
+	   idle: '#7e7f92',
+	   recording: '#fb7185',
+	   ok: '#34d399',
+	   warn: '#f59e0b',
+	   error: '#fb7185'
 	  }
 	 },
 	 fontFamily: {

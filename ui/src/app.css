@@ -3,7 +3,9 @@
 @tailwind utilities;
 
 html {
-	font-family: monospace;
+	/* CoGM vibe: sans chrome (was global monospace). Numbers stay aligned
+	   via .tabular-nums; the log feed opts back into mono explicitly. */
+	font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 	@apply text-foreground-secondary bg-background;
 	color-scheme: dark;
 	font-size: clamp(12px, 1vw + 8px, 14px);
