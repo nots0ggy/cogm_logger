@@ -216,7 +216,9 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
     try:
         print("Reading Network...", flush=True)
         if record_pcap_path is not None:
-            print(f"Saving pcap to {record_pcap_path}", flush=True)
+            # Absolute path so the UI can show the user exactly where the
+            # full-packet capture lands (for sharing it in for research).
+            print(f"Saving pcap to {os.path.abspath(record_pcap_path)}", flush=True)
         # Open the durable recovery file before sniffing. makedirs because the
         # default output lives under logger/.tmp which may not exist yet.
         try:

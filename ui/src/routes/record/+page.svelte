@@ -26,6 +26,9 @@
 	// (CAPTURE_ERROR). Drives the recovery panel below.
 	let capture_error: { code: string; message: string } | null = null;
 	let recovering = false;
+	// Path of the full-packet .pcap when that capture is enabled, surfaced so
+	// the user can find the file and send it in for protocol research.
+	let pcap_path = '';
 
 	function build_flags(cfg: Config): string {
 		return (cfg.all_interfaces ? '-i' : '') +
@@ -60,6 +63,11 @@
 				const parts = data.split('|');
 				capture_error = { code: parts[1] ?? 'UNKNOWN', message: parts.slice(2).join('|') };
 				recording_state.set('error');
+				return;
+			}
+			// Full-packet capture path, so the user can find and share the file.
+			if (data.startsWith('Saving pcap to ')) {
+				pcap_path = data.slice('Saving pcap to '.length).trim();
 				return;
 			}
 			packets_seen.update((n) => n + 1);
@@ -184,6 +192,23 @@
 		await os.open('https://npcap.com/dist/npcap-1.78.exe');
 	}
 
+	// Reveal the full-packet .pcap in the file manager so it's easy to attach
+	// and send in. Best-effort: select-in-explorer on Windows, else open the
+	// folder; a failure just does nothing.
+	async function reveal_pcap() {
+		if (!pcap_path) return;
+		try {
+			if (NL_OS === 'Windows') {
+				await os.execCommand(`explorer /select,"${pcap_path}"`);
+			} else {
+				const dir = pcap_path.replace(/[\\/][^\\/]*$/, '');
+				await os.open(dir || pcap_path);
+			}
+		} catch (e) {
+			console.error('reveal_pcap failed', e);
+		}
+	}
+
 	const CAPTURE_ERROR_INFO: Record<string, { title: string; detail: string; action: 'driver' | 'admin' | 'npcap' | 'retry' }> = {
 		NPCAP_MISSING: {
 			title: 'Capture driver not installed',
@@ -265,19 +290,36 @@
 
 <!-- Options bar -->
 {#if config}
-<div class="h-8 px-4 flex gap-3 items-center border-b border-gray-700 bg-background">
-	<label class="flex items-center gap-2 cursor-pointer select-none">
-		<input
-			type="checkbox"
-			class="rounded border-gray-600"
-			bind:checked={config.record_pcap}
-			on:change={handle_pcap_toggle}
-		/>
-		<span class="text-caption">Also save raw network capture (.pcap)</span>
-		<span class="text-caption text-foreground-secondary">Lets us extract more fields offline. Nothing is uploaded.</span>
-	</label>
-	{#if config.record_pcap && $recording_state === 'recording'}
-		<span class="text-caption text-gold ml-2">Restart capture to apply</span>
+<div class="min-h-8 px-4 py-1.5 flex flex-col gap-1 border-b border-gray-700 bg-background">
+	<div class="flex gap-3 items-center">
+		<label class="flex items-center gap-2 cursor-pointer select-none">
+			<input
+				type="checkbox"
+				class="rounded border-gray-600"
+				bind:checked={config.record_pcap}
+				on:change={handle_pcap_toggle}
+			/>
+			<span class="text-caption">Full packet capture (.pcap)</span>
+			<span class="text-caption text-foreground-secondary"
+				>Saves the complete raw traffic so the team can find new fields. Share the file for
+				protocol research. Nothing is uploaded automatically.</span
+			>
+		</label>
+		{#if config.record_pcap && $recording_state === 'recording' && !pcap_path}
+			<span class="text-caption text-gold ml-2">Restart capture to apply</span>
+		{/if}
+	</div>
+	{#if pcap_path}
+		<div class="flex items-center gap-2">
+			<span class="text-caption text-status-ok">Full capture:</span>
+			<span class="text-caption text-foreground-secondary truncate flex-1 tabular-nums" title={pcap_path}
+				>{pcap_path}</span
+			>
+			<button
+				class="text-caption text-gold hover:text-gold-200 transition-colors"
+				on:click={reveal_pcap}>Show file</button
+			>
+		</div>
 	{/if}
 </div>
 {/if}
