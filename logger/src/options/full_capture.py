@@ -23,6 +23,7 @@ import os
 from scapy.all import sniff, PcapWriter
 
 from .. import config
+from .capture_errors import emit_capture_error
 
 
 def _bpf_filter():
@@ -120,7 +121,7 @@ def start_full_capture(output, all_interfaces=True):
         pass
     except Exception as e:
         print("Error while reading network.", flush=True)
-        print(e, flush=True)
+        emit_capture_error(e)
     finally:
         pcap_writer.flush()
         pcap_writer.close()

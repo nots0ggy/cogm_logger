@@ -3,6 +3,7 @@ import re
 import sys
 from scapy.all import sniff, rdpcap, get_if_list
 from time import localtime, strftime
+from .capture_errors import emit_capture_error
 
 
 def dec(bytes):
@@ -43,6 +44,11 @@ def extract_string(hex, offset, length):
 
 last_payload = ""
 current_position = 0
+
+# Open recovery log file for the live session. start_sniff opens it once and
+# package_handler appends each parsed record so a crash leaves a readable
+# file behind. None when not live-capturing (e.g. offline pcap analysis).
+_log_file = None
 
 identifier_regex = r"[56][0-9a-f]0100[0-9a-f]{4}"
 name_regex = r"^[A-Z][a-zA-Z0-9_]{2,15}$"
@@ -130,16 +136,28 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
                         i += 1
                 if len(names) == 5:
                     time = strftime("%I:%M:%S", localtime(int(package.time)))
-                    print(
+                    line = (
                         payload[0:10]
                         + ","
                         + time
                         + ","
                         + ",".join(names)
                         + ","
-                        + possible_log,
-                        flush=True,
+                        + possible_log
                     )
+                    print(line, flush=True)
+                    # Durability: write each captured record straight to disk
+                    # so a PC crash mid-war can't wipe the session (the UI
+                    # otherwise holds logs only in memory until Save). Flush
+                    # per line; kills are infrequent so the cost is nil, and a
+                    # crash loses at most the in-flight line. Best-effort: a
+                    # disk error must never break capture.
+                    if _log_file is not None:
+                        try:
+                            _log_file.write(line + "\n")
+                            _log_file.flush()
+                        except Exception:
+                            pass
                     position = 600
                 else:
                     position = 1
@@ -194,10 +212,21 @@ def read_network_interfaces():
 
 
 def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=None):
+    global _log_file
     try:
         print("Reading Network...", flush=True)
         if record_pcap_path is not None:
             print(f"Saving pcap to {record_pcap_path}", flush=True)
+        # Open the durable recovery file before sniffing. makedirs because the
+        # default output lives under logger/.tmp which may not exist yet.
+        try:
+            directory = os.path.dirname(output)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            _log_file = open(output, "a", encoding="utf-8", errors="replace")
+        except Exception as file_err:
+            _log_file = None
+            print(f"Recovery file unavailable: {file_err}", flush=True)
         guidToNameDict = read_network_interfaces()
         intfList = get_if_list()
         namesAllowedList = [guidToNameDict.get(e) for e in intfList]
@@ -211,5 +240,15 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
                 namesAllowedList) > 0 and all_interfaces else None,
         )
     except Exception as e:
+        # Keep the legacy line for older status parsing, and add the
+        # classified CAPTURE_ERROR line the UI uses for actionable guidance.
         print("Error while reading network.", flush=True)
-        print(e, flush=True)
+        emit_capture_error(e)
+    finally:
+        if _log_file is not None:
+            try:
+                _log_file.flush()
+                _log_file.close()
+            except Exception:
+                pass
+            _log_file = None
