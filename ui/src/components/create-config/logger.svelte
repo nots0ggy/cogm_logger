@@ -82,9 +82,20 @@
 		personal_family_name = await storage.getData(personal_stats_storage_key).catch(() => '');
 	});
 
-	$: {
-		auto_scroll;
-		config && update_config({ ...config, auto_scroll });
+	$: persist_auto_scroll(auto_scroll, config);
+
+	// Persisting auto-scroll also rewrites the whole config blob (update_config
+	// replaces it), so apply the same guard as update_config_wrapper: re-read
+	// record_pcap, which is owned by the record page's full-capture toggle, so
+	// toggling auto-scroll in this editor can never revert that toggle.
+	async function persist_auto_scroll(_auto_scroll: boolean, _config: Config | undefined) {
+		if (!_config) return;
+		const persisted = await get_config().catch(() => null);
+		await update_config({
+			..._config,
+			...(persisted ? { record_pcap: persisted.record_pcap } : {}),
+			auto_scroll: _auto_scroll
+		});
 	}
 
 	$: {
