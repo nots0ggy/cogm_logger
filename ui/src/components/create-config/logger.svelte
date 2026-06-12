@@ -64,12 +64,19 @@
 
 	onMount(async () => {
 		config = await get_config();
-		possible_kill_offsets = [config.kill];
-		possible_name_offsets = [
-			[{ offset: config.player_one, count: 1 }],
-			[{ offset: config.player_two, count: 1 }],
-			[{ offset: config.guild, count: 1 }]
-		];
+		// Seed the 3-column default only for a fresh live session. A bulk-loaded
+		// session (recover/open) already had all of its columns rebuilt from its
+		// logs by the init-time logs_changed(); flattening them back to three here
+		// is what made get_name(3)/get_name(4) throw on export, so Save and Upload
+		// silently failed. Leave the rebuilt columns in place.
+		if (logs.length === 0) {
+			possible_kill_offsets = [config.kill];
+			possible_name_offsets = [
+				[{ offset: config.player_one, count: 1 }],
+				[{ offset: config.player_two, count: 1 }],
+				[{ offset: config.guild, count: 1 }]
+			];
+		}
 		auto_scroll = config.auto_scroll;
 		live_output_path = config.live_output_path || '';
 		personal_family_name = await storage.getData(personal_stats_storage_key).catch(() => '');
@@ -152,6 +159,13 @@
 	}
 
 	async function update_config_wrapper(identifier?: string) {
+		// calculate_config() runs once at init, before onMount loads config, for a
+		// bulk-loaded session (recover/open). Persisting then would write a config
+		// with everything but the offsets undefined and drop the capture settings
+		// (all_interfaces, ip_filter, auto_scroll, live_output_path). Skip it; the
+		// columns are still built for the view, and the next real save persists a
+		// full config.
+		if (!config) return;
 		config = {
 			...config,
 			patch: get_date(),
