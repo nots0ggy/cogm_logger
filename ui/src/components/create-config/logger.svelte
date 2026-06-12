@@ -217,6 +217,14 @@
 			.replaceAll(' ', '');
 	};
 
+	// The resolved name in each captured column for the first kill, shown as
+	// chips in the name-order panel so you can see what was captured before
+	// assigning Killer/Victim/Guild. Empty columns show as a dash.
+	$: captured_names =
+		logs.length > 0 && possible_name_offsets.length > 0
+			? possible_name_offsets.map((_offsets, i) => get_name(i, logs[0]) || '-')
+			: [];
+
 	function find_kill_offset(logs: LogType[]) {
 		const all_indicies: number[] = [];
 		for (const log of logs) {
@@ -538,6 +546,27 @@
 					Auto-detect{personal_family_name ? ` from "${personal_family_name}"` : ''}
 				</button>
 			</div>
+			<p class="text-caption leading-relaxed">
+				The logger captured {logs[0].names.length} names on each kill but not which is the killer, victim,
+				or guild. Set it once, or let Auto-detect guess{personal_family_name
+					? ` from "${personal_family_name}"`
+					: ''}. You can change it any time.
+			</p>
+			<div class="flex flex-col gap-1.5">
+				<span class="text-caption uppercase tracking-wide text-foreground-secondary"
+					>Captured names (sample kill)</span
+				>
+				<div class="flex flex-wrap gap-2">
+					{#each captured_names as name, i}
+						<span
+							class="inline-flex items-center gap-1.5 rounded-md border border-gray-700 bg-background px-2.5 py-1 text-sm tabular-nums"
+						>
+							<span class="text-gray-500 text-xs">{i + 1}</span>
+							<span class="text-foreground">{name}</span>
+						</span>
+					{/each}
+				</div>
+			</div>
 			<div class="grid grid-cols-3 gap-3">
 				<div class="flex flex-col gap-1">
 					<span class="text-caption text-status-ok">Killer</span>
@@ -564,6 +593,10 @@
 					/>
 				</div>
 			</div>
+			<p class="text-caption text-foreground-secondary">
+				Not sure? Auto-detect makes a best guess from the most repeated names. Tweak any dropdown if
+				the preview below reads backwards.
+			</p>
 			<div class="rounded-md border border-gray-700 bg-background p-2">
 				<span class="text-caption">Live preview</span>
 				<p class="text-sm tabular-nums mt-1">
