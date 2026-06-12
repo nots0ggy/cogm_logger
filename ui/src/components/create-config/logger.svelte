@@ -219,6 +219,66 @@
 		update_config_wrapper();
 	}
 
+	// Best-effort suggestion for the name order: the guild column repeats the
+	// most (many players share a guild), and the player's own family name
+	// should land in the subject (Killer/player_one) column. Only sets the
+	// indices, which stay fully editable; wrapped so it can never crash.
+	function auto_detect() {
+		try {
+			const numCols = possible_name_offsets.length;
+			if (numCols < 3 || logs.length === 0) return;
+
+			const cols: string[][] = Array.from({ length: numCols }, () => []);
+			for (const log of logs) {
+				for (let i = 0; i < numCols; i++) cols[i].push(get_name(i, log));
+			}
+			const distinctRatio = (vals: string[]) => {
+				const nonEmpty = vals.filter(Boolean);
+				if (nonEmpty.length === 0) return 1;
+				return new Set(nonEmpty).size / nonEmpty.length;
+			};
+			// Guild: lowest distinct ratio (most repeated values).
+			let g = 0;
+			for (let i = 1; i < numCols; i++) {
+				if (distinctRatio(cols[i]) < distinctRatio(cols[g])) g = i;
+			}
+			// Players: the two remaining columns with the most distinct names.
+			const remaining: number[] = [];
+			for (let i = 0; i < numCols; i++) if (i !== g) remaining.push(i);
+			remaining.sort(
+				(a, b) =>
+					new Set(cols[b].filter(Boolean)).size - new Set(cols[a].filter(Boolean)).size
+			);
+			let p1 = remaining[0];
+			let p2 = remaining[1];
+
+			// Family name should sit in the subject column; if it shows up more
+			// in the other, the order is likely reversed, so swap.
+			if (personal_family_name) {
+				const fn = personal_family_name.toLowerCase();
+				let p1Hits = 0;
+				let p2Hits = 0;
+				for (const log of logs) {
+					if (get_name(p1, log).toLowerCase() === fn) p1Hits++;
+					if (get_name(p2, log).toLowerCase() === fn) p2Hits++;
+				}
+				if (p2Hits > p1Hits) {
+					const t = p1;
+					p1 = p2;
+					p2 = t;
+				}
+			}
+
+			player_one_index = p1;
+			player_two_index = p2;
+			guild_index = g;
+			update_config_wrapper();
+			show_toast('Auto-detected. Check the preview and adjust if needed.', 'success');
+		} catch (e) {
+			console.error('auto_detect failed', e);
+		}
+	}
+
 	function scroll(top?: boolean) {
 		const container = document.querySelector('svelte-virtual-list-viewport');
 		if (container && !top) {
@@ -397,13 +457,64 @@
 	}
 </script>
 
-{#if logs.length > 0}
-	<span class="absolute top-2 left-0 right-0 text-center text-gray-400 text-sm"
-		>Adjust the Logs to: <b>Family-Name-1</b> kills/died to
-		<b>Family-Name-2</b> from <b>Guild</b></span
-	>
-{/if}
 <div class="flex flex-col gap-2 items-center w-full h-full relative">
+	<!-- Name order: set which captured column is the Killer, Victim, and Guild
+	     once. Manual dropdowns are the source of truth; Auto-detect just fills
+	     them in. The same update_names/get_name logic the rows always used. -->
+	{#if logs.length > 0 && config}
+		<div class="w-full rounded-lg border border-gray-700 bg-background-secondary p-3 flex flex-col gap-3">
+			<div class="flex items-center justify-between">
+				<span class="heading-h2">Name order</span>
+				<button
+					class="flex items-center gap-2 text-xs font-semibold text-gold border border-gold/40 bg-gold/10 rounded-md px-3 py-1.5 hover:bg-gold/20 transition-colors"
+					on:click={auto_detect}
+				>
+					Auto-detect{personal_family_name ? ` from "${personal_family_name}"` : ''}
+				</button>
+			</div>
+			<div class="grid grid-cols-3 gap-3">
+				<div class="flex flex-col gap-1">
+					<span class="text-caption text-status-ok">Killer</span>
+					<Select
+						options={get_name_options(player_one_index, logs[0])}
+						selected_value={player_one_index}
+						on_change={(e) => update_names('player_one', e)}
+					/>
+				</div>
+				<div class="flex flex-col gap-1">
+					<span class="text-caption text-status-error">Victim</span>
+					<Select
+						options={get_name_options(player_two_index, logs[0])}
+						selected_value={player_two_index}
+						on_change={(e) => update_names('player_two', e)}
+					/>
+				</div>
+				<div class="flex flex-col gap-1">
+					<span class="text-caption text-gold">Guild</span>
+					<Select
+						options={get_name_options(guild_index, logs[0])}
+						selected_value={guild_index}
+						on_change={(e) => update_names('guild', e)}
+					/>
+				</div>
+			</div>
+			<div class="rounded-md border border-gray-700 bg-background p-2">
+				<span class="text-caption">Live preview</span>
+				<p class="text-sm tabular-nums mt-1">
+					<span class="text-gray-400">[{logs[0].time}]</span>
+					<span class="text-status-ok">{get_name(player_one_index, logs[0])}</span>
+					<span class="text-gray-400"
+						>{logs[0].hex[possible_kill_offsets[kill_index]] === '1'
+							? 'has killed'
+							: 'died to'}</span
+					>
+					<span class="text-status-error">{get_name(player_two_index, logs[0])}</span>
+					<span class="text-gray-400">from</span>
+					<span class="text-gold">{get_name(guild_index, logs[0])}</span>
+				</p>
+			</div>
+		</div>
+	{/if}
 	<div class="flex gap-1 items-center justify-start w-full px-1">
 		<p class="text-xs sm:text-sm text-gray-300">{logs.length} logs</p>
 		<div class="ml-2">
@@ -453,37 +564,21 @@
 		{/if}
 		{#key logs.length === 0}
 			<VirtualList items={logs} let:item={log}>
-				<div class="flex gap-2 group py-1 items-center px-1">
-					<p class="text-sm text-gray-400">{log.time}</p>
-					<!-- <p>{log.names[player_one_index].name}</p> -->
-					<Select
-						options={get_name_options(player_one_index, log)}
-						selected_value={player_one_index}
-						on_change={(e) => update_names('player_one', e)}
-					/>
-					<div class="flex justify-center items-center w-16">
+				<!-- Rows display the resolved line; the order is set once in the
+				     panel above. Same get_name logic the dropdowns used. -->
+				<div class="flex gap-2 group py-1 items-center px-1 text-sm tabular-nums">
+					<span class="text-gray-400">{log.time}</span>
+					<span class="text-status-ok font-medium">{get_name(player_one_index, log)}</span>
+					<span class="w-14 text-center">
 						{#if log.hex[possible_kill_offsets[kill_index]] === '1'}
-							<p class="self-center text-submarine-500">killed</p>
+							<span class="text-status-ok">killed</span>
 						{:else}
-							<p class="self-center text-red-500">died to</p>
+							<span class="text-status-error">died to</span>
 						{/if}
-					</div>
-					<Select
-						options={get_name_options(player_two_index, log)}
-						selected_value={player_two_index}
-						on_change={(e) => update_names('player_two', e)}
-					/>
-					<p class="text-sm text-gray-400">from</p>
-					<Select
-						options={get_name_options(guild_index, log)}
-						selected_value={guild_index}
-						on_change={(e) => update_names('guild', e)}
-					/>
-					<!-- <div class="ml-auto hidden group-hover:flex items-center">
-						<button on:click={() => null}>
-							<Icon icon={MdDelete} class="self-center text-red-500" />
-						</button>
-					</div> -->
+					</span>
+					<span class="text-status-error font-medium">{get_name(player_two_index, log)}</span>
+					<span class="text-gray-400">from</span>
+					<span class="text-gold font-medium">{get_name(guild_index, log)}</span>
 				</div>
 			</VirtualList>
 		{/key}
