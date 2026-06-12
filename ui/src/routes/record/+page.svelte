@@ -369,5 +369,16 @@
 	</div>
 {/if}
 
+<!-- Pre-kill hint: the name-order setup lives in the editor below and only
+     shows once a kill is captured, so say so instead of leaving a blank wait. -->
+{#if $recording_state === 'recording' && logs.length === 0 && !capture_error}
+	<div class="mx-4 mt-3 rounded-md border border-gray-700 bg-background-secondary px-4 py-3">
+		<p class="text-caption leading-relaxed">
+			Recording. Kills appear below as they happen, and the <span class="text-gold">name order</span>
+			setup (Killer / Victim / Guild, with Auto-detect) shows up with the first one.
+		</p>
+	</div>
+{/if}
+
 <!-- TODO: replace height={165} with get_remaining_height() from utils once utility exists -->
 <Logger {logs} height={165} {session_path} />
