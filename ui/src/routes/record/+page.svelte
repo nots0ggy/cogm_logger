@@ -35,6 +35,11 @@
 	}
 
 	const logger_callback: LoggerCallback = (data, status) => {
+		// Once the page is torn down, ignore every late event. The error and
+		// terminated branches already gated on this; the running branch did
+		// not, so an orphaned reconnect could flip the shared recording_state
+		// back to 'recording' after navigating away.
+		if (is_destroyed) return;
 		if (status === 'running') {
 			packets_seen.update((n) => n + 1);
 

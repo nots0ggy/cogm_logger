@@ -52,11 +52,19 @@ let logger: os.SpawnedProcess | null = null;
 export type LoggerCallback = (data: string, status: 'running' | 'terminated' | 'error') => void;
 let callback: LoggerCallback | null = null;
 
+// Set by stop_logger, cleared at the start of start_logger. A reconnect
+// dispatches start_logger without awaiting it, and start_logger then awaits
+// ~1s on its taskkill before spawning; if stop_logger ran during that window
+// we must abort the spawn so a torn-down page doesn't leak a background
+// capture.
+let stopped = false;
+
 export async function start_logger(
 	clb: LoggerCallback,
 	arg: keyof typeof arg_mapping,
 	data?: string
 ) {
+	stopped = false;
 	if (logger) {
 		try {
 			await os.updateSpawnedProcess(logger.id, 'exit');
@@ -99,6 +107,13 @@ export async function start_logger(
 		}
 	}
 
+	// stop_logger may have fired during the taskkill await above (a reconnect
+	// races with navigating away). Abort before spawning so we don't leak a
+	// detached capture and re-attach a stale callback.
+	if (stopped) {
+		return;
+	}
+
 	console.log('Starting logger with command: ' + logger_command + arg_mapping[arg] + extra_args);
 
 	logger = await os.spawnProcess(logger_command + arg_mapping[arg] + extra_args);
@@ -114,6 +129,7 @@ export async function start_logger(
  * triggers doesn't reach a torn-down page.
  */
 export async function stop_logger() {
+	stopped = true;
 	callback = null;
 	events.off('spawnedProcess', handle_process);
 	const current = logger;
