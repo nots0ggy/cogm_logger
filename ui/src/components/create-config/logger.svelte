@@ -30,6 +30,21 @@
 	export let logs: LogType[];
 	export let height = 155;
 	export let loading = false;
+	// The on-disk crash-recovery file backing these logs, when there is one
+	// (the live record session, or a recovered session). Cleared once the
+	// user has preserved the logs via Save or Upload, so the home screen
+	// doesn't keep offering to recover an already-saved session.
+	export let session_path: string | null = null;
+
+	async function clear_session() {
+		if (!session_path) return;
+		try {
+			await filesystem.remove(session_path);
+		} catch {
+			/* best-effort; a leftover file only means an extra recover offer */
+		}
+		session_path = null;
+	}
 
 	let possible_name_offsets: { offset: number; count: number }[][] = [];
 	let name_indicies: number[] = [0, 0, 0, 0, 0];
@@ -76,7 +91,16 @@
 	function logs_changed() {
 		auto_scroll && setTimeout(scroll);
 
-		if (logs.length < 50 || logs.length % 100 === 0) {
+		// The last clause covers bulk-loaded sessions (recover/open): logs
+		// arrive in one shot past 50, so calculate_config would otherwise never
+		// run and possible_name_offsets stays at the 3-entry default, making
+		// get_name(3/4) throw on export. In the live record flow the offsets
+		// are fully built during the 1..49 growth, so this clause is false then.
+		if (
+			logs.length < 50 ||
+			logs.length % 100 === 0 ||
+			possible_name_offsets.length < (logs[0]?.names.length ?? 0)
+		) {
 			possible_kill_offsets = find_kill_offset(logs).map((offset) => offset);
 			calculate_config();
 		} else {
@@ -316,7 +340,10 @@
 
 	async function save_logs() {
 		const path = await open_save_location(get_formatted_date(get_date()) + '.log');
-		filesystem.writeFile(path, get_logs_string());
+		if (!path) return; // user cancelled the dialog
+		await filesystem.writeFile(path, get_logs_string());
+		// The session is now preserved to a real file; drop the recovery copy.
+		await clear_session();
 	}
 
 	async function write_live_output() {
@@ -453,7 +480,10 @@
 			show_toast('Set your CoGM token in Settings first', 'error');
 			return;
 		}
-		ModalManager.open(CogmUploadModal, { logs_string: get_logs_string() });
+		ModalManager.open(CogmUploadModal, {
+			logs_string: get_logs_string(),
+			on_uploaded: clear_session
+		});
 	}
 </script>
 

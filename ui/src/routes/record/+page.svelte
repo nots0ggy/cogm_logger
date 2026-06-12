@@ -29,11 +29,19 @@
 	// Path of the full-packet .pcap when that capture is enabled, surfaced so
 	// the user can find the file and send it in for protocol research.
 	let pcap_path = '';
+	// Per-session recovery file. A unique name per recording (not the engine's
+	// day-default) so same-day sessions never merge in the recovery file, and
+	// so the editor can clear exactly this file once the logs are saved.
+	let session_path = '';
 
 	function build_flags(cfg: Config): string {
 		return (cfg.all_interfaces ? '-i' : '') +
 			(cfg.ip_filter ? ' -p' : '') +
 			(cfg.record_pcap ? ' -r' : '');
+	}
+
+	function spawn_args(): string {
+		return `${build_flags(config)} -o "${session_path}"`;
 	}
 
 	function format_runtime(started: number | null, current: number): string {
@@ -120,7 +128,7 @@
 			);
 			if (!is_destroyed && retry_count < 3) {
 				recording_state.set('reconnecting');
-				start_logger(logger_callback, 'analyze', build_flags(config));
+				start_logger(logger_callback, 'analyze', spawn_args());
 				retry_count++;
 			} else if (!is_destroyed && retry_count >= 3) {
 				recording_state.set('error');
@@ -131,7 +139,7 @@
 		} else if (status === 'terminated') {
 			if (!is_destroyed && retry_count < 3) {
 				recording_state.set('reconnecting');
-				start_logger(logger_callback, 'analyze', build_flags(config));
+				start_logger(logger_callback, 'analyze', spawn_args());
 				retry_count++;
 			} else if (!is_destroyed && retry_count >= 3) {
 				recording_state.set('error');
@@ -146,11 +154,12 @@
 
 	onMount(async () => {
 		config = await get_config();
+		session_path = `logger/.tmp/session-${Date.now()}.log`;
 		recording_state.set('recording');
 		recording_started_at.set(Date.now());
 		packets_seen.set(0);
 		ticker = setInterval(() => { now = Date.now(); }, 1000);
-		start_logger(logger_callback, 'analyze', build_flags(config));
+		start_logger(logger_callback, 'analyze', spawn_args());
 	});
 
 	onDestroy(() => {
@@ -174,7 +183,7 @@
 		capture_error = null;
 		retry_count = 0;
 		recording_state.set('reconnecting');
-		start_logger(logger_callback, 'analyze', build_flags(config));
+		start_logger(logger_callback, 'analyze', spawn_args());
 	}
 
 	async function handle_restart_driver() {
@@ -353,4 +362,4 @@
 {/if}
 
 <!-- TODO: replace height={165} with get_remaining_height() from utils once utility exists -->
-<Logger {logs} height={165} />
+<Logger {logs} height={165} {session_path} />

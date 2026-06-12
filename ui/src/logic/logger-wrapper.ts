@@ -189,10 +189,18 @@ export async function relaunch_as_admin(): Promise<void> {
 	if (NL_OS !== 'Windows') return;
 	try {
 		const exe = 'cogm-logger-win_x64.exe';
-		await os.execCommand(
-			`powershell -NoProfile -Command "Start-Process '${exe}' -Verb RunAs"`
+		// -PassThru + a non-zero exit on failure so we only close THIS instance
+		// when the elevated copy actually launched. execCommand resolves even
+		// when the inner Start-Process throws or the user cancels UAC, so
+		// exiting unconditionally would close the app on a routine UAC decline.
+		const r = await os.execCommand(
+			`powershell -NoProfile -Command "try { Start-Process '${exe}' -Verb RunAs -ErrorAction Stop; exit 0 } catch { exit 1 }"`
 		);
-		await app.exit();
+		if (r.exitCode === 0) {
+			await app.exit();
+		} else {
+			alert('Could not relaunch as administrator. The app will keep running.');
+		}
 	} catch (e) {
 		console.error('relaunch_as_admin failed', e);
 	}

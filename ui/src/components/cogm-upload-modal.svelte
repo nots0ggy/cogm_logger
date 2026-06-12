@@ -7,6 +7,9 @@
 	import { get_config } from './create-config/config';
 
 	export let logs_string: string;
+	// Called once the event is created server-side (the war is preserved on
+	// CoGM), so the caller can drop its local crash-recovery copy.
+	export let on_uploaded: (() => void) | null = null;
 
 	type UploadState = 'form' | 'uploading' | 'done';
 	let state: UploadState = 'form';
@@ -161,6 +164,14 @@
 			form_error = 'CoGM did not return a job id. Check the dashboard.';
 			show_toast('Upload failed', 'error');
 			return;
+		}
+
+		// The war is now created on CoGM, so the local crash-recovery copy is
+		// no longer needed. Fire-and-forget; never let it affect the upload.
+		try {
+			on_uploaded?.();
+		} catch {
+			/* ignore */
 		}
 
 		// The user may have closed the modal while the POST was in flight.

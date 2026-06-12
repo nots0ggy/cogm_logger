@@ -10,12 +10,16 @@
 	let loading = true;
 	let logs: LogType[] = [];
 	let filename = '';
+	// Full path of the recovered file, handed to the editor so a Save/Upload
+	// clears it (it's no longer an unsaved session after that).
+	let recovered_path: string | null = null;
 
 	onMount(async () => {
 		try {
 			const session = await find_last_session();
 			if (session) {
 				logs = session.logs;
+				recovered_path = session.path;
 				filename = session.path.split(/[\\/]/).pop() ?? session.path;
 			}
 		} catch (e) {
@@ -57,5 +61,5 @@
 			Home
 		</button>
 	</div>
-	<Logger {logs} height={375} />
+	<Logger {logs} height={375} session_path={recovered_path} />
 {/if}
