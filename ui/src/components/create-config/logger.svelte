@@ -531,7 +531,7 @@
 	}
 </script>
 
-<div class="flex flex-col gap-2 items-center w-full h-full relative">
+<div class="flex flex-col gap-2 items-center w-full flex-1 min-h-0 relative">
 	<!-- Name order: set which captured column is the Killer, Victim, and Guild
 	     once. Manual dropdowns are the source of truth; Auto-detect just fills
 	     them in. The same update_names/get_name logic the rows always used. -->
@@ -650,7 +650,7 @@
 			<Icon icon={IoMdSettings} />
 		</button>
 	</div>
-	<div class="w-full flex gap-2 pb-14" style="height: {height}px;">
+	<div class="w-full flex gap-2 pb-14 flex-1 min-h-0" style="min-height: {height}px;">
 		<div class="w-[550px] flex-shrink-0 rounded-lg border border-gray-700 overflow-hidden p-2 relative h-full">
 		{#if loading && logs.length === 0}
 			<div class="absolute inset-0 flex justify-center items-center mb-14">
