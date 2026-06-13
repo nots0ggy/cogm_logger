@@ -46,14 +46,21 @@ args = parser.parse_args()
 
 config.init("config.ini")
 
-# When -r is combined with -a, derive a pcap path alongside the .log
-# so the analyze pipeline can both parse live and persist the raw capture.
-# Bare -r (no -a) keeps its legacy behaviour via record.record().
-pcap_path = (
-    os.path.splitext(args.output)[0] + ".pcap"
-    if args.record and args.analyze
-    else None
-)
+# When -r is combined with -a, save the full raw capture into a top-level
+# captures/ folder with a readable, sortable name so it's easy to find and send
+# in for protocol research (the old path buried it next to the recovery file in
+# logger/.tmp, and Save deleted that file). Keeping it separate from .output
+# means the recovery .log can be cleared without touching the capture. Bare -r
+# (no -a) keeps its legacy behaviour via record.record().
+if args.record and args.analyze:
+    from time import localtime, strftime
+
+    os.makedirs("captures", exist_ok=True)
+    pcap_path = os.path.join(
+        "captures", "capture-" + strftime("%Y-%m-%d_%H-%M-%S", localtime()) + ".pcap"
+    )
+else:
+    pcap_path = None
 
 if args.status:
     status_check.check_health()
