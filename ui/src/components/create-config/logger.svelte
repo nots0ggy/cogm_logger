@@ -56,6 +56,12 @@
 
 	let possible_kill_offsets: number[] = [];
 	let kill_index = 0;
+	// sch-28's calibrated kill-flag offset (config.ini kill=141). The live path
+	// historically threw this away and re-guessed with find_kill_offset, which
+	// regresses K/D toward 50/50 (see docs/kill-detection.md). Prefer the
+	// calibrated byte; keep the heuristic results as fallback candidates the
+	// config modal can still select if a BDO patch shifts it.
+	const CALIBRATED_KILL_OFFSET = 141;
 
 	let config: Config;
 	let auto_scroll = true;
@@ -148,7 +154,11 @@
 			logs.length % 100 === 0 ||
 			possible_name_offsets.length < (logs[0]?.names.length ?? 0)
 		) {
-			possible_kill_offsets = find_kill_offset(logs).map((offset) => offset);
+			const detected = find_kill_offset(logs);
+			possible_kill_offsets = [
+				CALIBRATED_KILL_OFFSET,
+				...detected.filter((offset) => offset !== CALIBRATED_KILL_OFFSET)
+			];
 			calculate_config();
 		} else {
 			write_live_output();
