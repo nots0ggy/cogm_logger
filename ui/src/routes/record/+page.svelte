@@ -16,6 +16,9 @@
 	import { goto } from '$app/navigation';
 
 	let logs: LogType[] = [];
+	// Dedup keys for O(1) duplicate rejection (see the callback). Lives for the
+	// whole record session; logs only grow here, never reset.
+	const seen_logs = new Set<string>();
 	let is_destroyed = false;
 	let retry_count = 0;
 	let config: Config;
@@ -102,17 +105,15 @@
 					hex: d[7]
 				};
 
-				if (
-					logs.find(
-						(log) =>
-							log.identifier === new_log.identifier &&
-							log.time === new_log.time &&
-							log.names.length === new_log.names.length &&
-							log.names.every((name, i) => name.name === new_log.names[i].name)
-					)
-				) {
-					return;
-				}
+				// Dedup by key via a Set instead of logs.find() per record. find()
+				// is O(n) per kill, so a long siege with thousands of kills degraded
+				// to O(n^2) and the feed lagged late in the war. The key matches the
+				// recover parser's format.
+				const dedup_key = `${new_log.identifier}|${new_log.time}|${new_log.names
+					.map((n) => n.name)
+					.join(',')}`;
+				if (seen_logs.has(dedup_key)) return;
+				seen_logs.add(dedup_key);
 
 				logs.push(new_log);
 				logs = logs;

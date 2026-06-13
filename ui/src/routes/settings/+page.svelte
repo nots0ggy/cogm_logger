@@ -5,7 +5,9 @@
 	import {
 		get_config,
 		type Config,
+		type NameOrderSample,
 		update_config,
+		get_name_order_sample,
 		PERSONAL_FAMILY_NAME_KEY
 	} from '../../components/create-config/config';
 	import Button from '../../svelte-ui/elements/button.svelte';
@@ -24,6 +26,37 @@
 	let cogm_token = '';
 	let cogm_url = 'https://cogm.app';
 	let cogm_guild = '';
+
+	// Name order: the captured columns from the last war (for the dropdowns) and
+	// the saved Killer/Victim/Guild assignment (config.name_order).
+	let name_order_sample: NameOrderSample | null = null;
+	$: sample_names = name_order_sample ? name_order_sample.names.map((n) => n.name || '-') : [];
+	function col_name(i: number): string {
+		return name_order_sample?.names[i]?.name || '-';
+	}
+
+	// Reassign Killer/Victim/Guild to a captured column, swapping with whatever
+	// currently holds that column so the three stay distinct. Same rule the
+	// record-screen panel uses.
+	async function set_name_role(role: 'killer' | 'victim' | 'guild', e: Event) {
+		if (!config) return;
+		const v = parseInt((e.target as HTMLSelectElement).value);
+		const ord = { ...config.name_order };
+		if (role === 'killer') {
+			if (v === ord.victim) ord.victim = ord.killer;
+			else if (v === ord.guild) ord.guild = ord.killer;
+			ord.killer = v;
+		} else if (role === 'victim') {
+			if (v === ord.killer) ord.killer = ord.victim;
+			else if (v === ord.guild) ord.guild = ord.victim;
+			ord.victim = v;
+		} else {
+			if (v === ord.killer) ord.killer = ord.guild;
+			else if (v === ord.victim) ord.victim = ord.guild;
+			ord.guild = v;
+		}
+		config = await update_config({ ...config, name_order: ord });
+	}
 	// The token/url that produced the current cogm_guild label. The label is
 	// shown only while the live inputs still match these.
 	let verified_token = '';
@@ -141,6 +174,7 @@
 		cogm_token = config.cogm_token || '';
 		cogm_url = config.cogm_url || 'https://cogm.app';
 		cogm_guild = config.cogm_guild || '';
+		name_order_sample = await get_name_order_sample();
 		// Trust the stored guild label for the stored token/url it was saved
 		// against; editing either afterwards clears it via on_cogm_input_change.
 		verified_token = cogm_token;
@@ -229,6 +263,61 @@
 					bind:value={personal_family_name}
 				/>
 			</div>
+		</div>
+
+		<!-- NAME ORDER -->
+		<div class="divider-top">
+			<span class="heading-h2">Name order</span>
+			<p class="text-caption mt-1">
+				Which captured column is the killer, victim, and guild. Set once and it applies to every
+				war.
+			</p>
+			{#if name_order_sample && config}
+				<div class="grid grid-cols-3 gap-3 mt-3">
+					<div class="flex flex-col gap-1">
+						<span class="text-caption text-status-ok">Killer</span>
+						<Select
+							options={sample_names}
+							selected_value={config.name_order.killer}
+							on_change={(e) => set_name_role('killer', e)}
+						/>
+					</div>
+					<div class="flex flex-col gap-1">
+						<span class="text-caption text-status-error">Victim</span>
+						<Select
+							options={sample_names}
+							selected_value={config.name_order.victim}
+							on_change={(e) => set_name_role('victim', e)}
+						/>
+					</div>
+					<div class="flex flex-col gap-1">
+						<span class="text-caption text-gold">Guild</span>
+						<Select
+							options={sample_names}
+							selected_value={config.name_order.guild}
+							on_change={(e) => set_name_role('guild', e)}
+						/>
+					</div>
+				</div>
+				<div class="rounded-md border border-gray-700 bg-background p-2 mt-3">
+					<span class="text-caption">Preview</span>
+					<p class="text-sm mt-1">
+						<span class="text-status-ok">{col_name(config.name_order.killer)}</span>
+						<span class="text-gray-400">killed</span>
+						<span class="text-status-error">{col_name(config.name_order.victim)}</span>
+						<span class="text-gray-400">from</span>
+						<span class="text-gold">{col_name(config.name_order.guild)}</span>
+					</p>
+				</div>
+				<p class="text-caption mt-2">
+					Columns are from your last capture. Auto-detect runs on the record screen during a war.
+				</p>
+			{:else}
+				<p class="text-caption mt-3">
+					Record a war once and the captured names show up here to set the order. You can also set
+					it on the record screen during a war.
+				</p>
+			{/if}
 		</div>
 
 		<!-- COGM -->

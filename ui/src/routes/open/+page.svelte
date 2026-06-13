@@ -8,6 +8,8 @@
 	import LogEditor from '../../components/create-config/log-editor.svelte';
 	let logs: LogType[] = [];
 	let combat_logs: Log[] = [];
+	// Dedup keys for the network/pcap path; reset with logs in open_pcap.
+	let seen_logs = new Set<string>();
 	let loading = false;
 
 	let is_network = false;
@@ -32,17 +34,13 @@
 					hex: d[7]
 				};
 
-				if (
-					logs.find(
-						(log) =>
-							log.identifier === new_log.identifier &&
-							log.time === new_log.time &&
-							log.names.length === new_log.names.length &&
-							log.names.every((name, i) => name.name === new_log.names[i].name)
-					)
-				) {
-					return;
-				}
+				// Dedup via a Set rather than logs.find() per record (O(n^2) on a
+				// big capture). Reset alongside logs in open_pcap.
+				const dedup_key = `${new_log.identifier}|${new_log.time}|${new_log.names
+					.map((n) => n.name)
+					.join(',')}`;
+				if (seen_logs.has(dedup_key)) return;
+				seen_logs.add(dedup_key);
 
 				logs.push(new_log);
 				logs = logs;
@@ -58,6 +56,7 @@
 	async function open_pcap() {
 		logs = [];
 		combat_logs = [];
+		seen_logs = new Set();
 		const filePaths = await open_file();
 		if (!filePaths || filePaths.length === 0) return;
 		const config = await get_config();

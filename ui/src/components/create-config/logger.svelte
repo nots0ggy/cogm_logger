@@ -17,6 +17,7 @@
 		get_config,
 		hexToString,
 		calculate_kd,
+		save_name_order_sample,
 		PERSONAL_FAMILY_NAME_KEY
 	} from '../../components/create-config/config';
 	import { filesystem, os, storage } from '@neutralinojs/lib';
@@ -61,9 +62,30 @@
 	let live_output_path = '';
 	const personal_stats_storage_key = PERSONAL_FAMILY_NAME_KEY;
 	let personal_family_name = '';
+	// Saved once per session, after the first kill, so Settings can show the
+	// name-order panel without a live war.
+	let sample_saved = false;
 
 	onMount(async () => {
 		config = await get_config();
+		// Restore the saved name order (which captured column is Killer / Victim /
+		// Guild) so a choice made in one war, or in Settings, carries to the next.
+		// Validate against the 5 columns and require three distinct indices; fall
+		// back to the positional default if anything is off. Safe before kills
+		// arrive: nothing reads these indices until logs exist and the columns are
+		// rebuilt to five.
+		const ord = config.name_order;
+		if (
+			ord &&
+			[ord.killer, ord.victim, ord.guild].every(
+				(i) => Number.isInteger(i) && i >= 0 && i < 5
+			) &&
+			new Set([ord.killer, ord.victim, ord.guild]).size === 3
+		) {
+			player_one_index = ord.killer;
+			player_two_index = ord.victim;
+			guild_index = ord.guild;
+		}
 		// Seed the 3-column default only for a fresh live session. A bulk-loaded
 		// session (recover/open) already had all of its columns rebuilt from its
 		// logs by the init-time logs_changed(); flattening them back to three here
@@ -104,6 +126,13 @@
 		} else {
 			scroll(true);
 		}
+	}
+
+	$: if (!sample_saved && config && logs.length > 0) {
+		sample_saved = true;
+		save_name_order_sample({
+			names: logs[0].names.map((n) => ({ name: n.name, offset: n.offset }))
+		});
 	}
 
 	function logs_changed() {
@@ -191,7 +220,10 @@
 			player_one: possible_name_offsets[player_one_index][name_indicies[player_one_index]].offset,
 			player_two: possible_name_offsets[player_two_index][name_indicies[player_two_index]].offset,
 			guild: possible_name_offsets[guild_index][name_indicies[guild_index]].offset,
-			kill: possible_kill_offsets[kill_index]
+			kill: possible_kill_offsets[kill_index],
+			// Persist the order as column indices so it carries to the next war and
+			// can be read/edited from Settings.
+			name_order: { killer: player_one_index, victim: player_two_index, guild: guild_index }
 		};
 		await update_config(config);
 		await write_live_output();
@@ -212,6 +244,10 @@
 	$: get_name = (i: number, log: LogType) => {
 		const list = possible_name_offsets[i];
 		const selected = name_indicies[i];
+		// A restored name-order index can momentarily point past the columns
+		// before they're rebuilt from the first kill. Return empty rather than
+		// throw; the next reactive pass resolves it once the columns exist.
+		if (!list || !list[selected]) return '';
 		return hexToString(log.hex.slice(list[selected].offset, list[selected].offset + 64))
 			.replaceAll('\0', '')
 			.replaceAll(' ', '');
