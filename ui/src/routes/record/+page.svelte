@@ -9,11 +9,12 @@
 	import { os } from '@neutralinojs/lib';
 	import { onDestroy, onMount } from 'svelte';
 	import Logger from '../../components/create-config/logger.svelte';
-	import { get_config, update_config, type Config, type LogType } from '../../components/create-config/config';
+	import { get_config, type Config, type LogType } from '../../components/create-config/config';
 	import { recording_state, recording_started_at, packets_seen } from '../../logic/recording-store';
 	import StatusDot from '../../components/status-dot.svelte';
 	import Button from '../../svelte-ui/elements/button.svelte';
 	import { goto } from '$app/navigation';
+	import { show_toast } from '../../svelte-ui/util';
 
 	let logs: LogType[] = [];
 	// Dedup keys for O(1) duplicate rejection (see the callback). Lives for the
@@ -38,9 +39,10 @@
 	let session_path = '';
 
 	function build_flags(cfg: Config): string {
-		return (cfg.all_interfaces ? '-i' : '') +
-			(cfg.ip_filter ? ' -p' : '') +
-			(cfg.record_pcap ? ' -r' : '');
+		// -r is always on: the full pcap is captured automatically (not a setting),
+		// so the raw bytes are always there for recalibration. cfg is still read
+		// for the interface and IP-filter flags.
+		return (cfg.all_interfaces ? '-i' : '') + (cfg.ip_filter ? ' -p' : '') + ' -r';
 	}
 
 	function spawn_args(): string {
@@ -260,11 +262,6 @@
 		? CAPTURE_ERROR_INFO[capture_error.code] ?? CAPTURE_ERROR_INFO.UNKNOWN
 		: null;
 
-	async function handle_pcap_toggle() {
-		if (config) {
-			await update_config(config);
-		}
-	}
 
 	$: runtime_display = format_runtime($recording_started_at, now);
 
@@ -275,12 +272,34 @@
 		: $recording_state === 'error'
 		? 'ERROR'
 		: 'IDLE';
+
+	// Color the status word by state so RECORDING reads at a glance instead of
+	// looking identical to IDLE/ERROR (only the 8px dot used to change).
+	$: state_color = $recording_state === 'recording'
+		? 'text-status-recording'
+		: $recording_state === 'error'
+		? 'text-status-error'
+		: $recording_state === 'reconnecting'
+		? 'text-status-warn'
+		: 'text-foreground-secondary';
+
+	$: capture_active = $recording_state === 'recording' || $recording_state === 'reconnecting';
+
+	// Opening Settings navigates away, and onDestroy stops the sniffer, so doing
+	// it mid-war would silently kill capture. Block it and say why instead.
+	function open_settings() {
+		if (capture_active) {
+			show_toast('Stop recording first to open Settings', 'error');
+			return;
+		}
+		goto('/settings');
+	}
 </script>
 
 <!-- Topbar -->
 <div class="sticky top-0 z-10 h-10 flex items-center px-4 gap-3 bg-background border-b border-gray-700">
 	<StatusDot state={$recording_state} pulse={$recording_state === 'recording'} size={8} />
-	<span class="heading-h2">{state_label}</span>
+	<span class="text-sm font-semibold tracking-wide {state_color}">{state_label}</span>
 	<span class="text-foreground-secondary text-caption mx-0.5">·</span>
 	<span class="tabular-nums text-caption">{runtime_display}</span>
 	<span class="text-foreground-secondary text-caption mx-0.5">·</span>
@@ -297,36 +316,23 @@
 		</button>
 		<!-- TODO Phase 4: extract inline ConfigModal from logger.svelte and open it here instead of navigating -->
 		<button
-			class="px-2 py-1 text-xs rounded bg-background-secondary border border-gray-700 text-foreground hover:border-gray-500 transition-colors"
-			on:click={() => goto('/settings')}
+			class="px-2 py-1 text-xs rounded bg-background-secondary border border-gray-700 text-foreground hover:border-gray-500 transition-colors {capture_active
+				? 'opacity-50'
+				: ''}"
+			on:click={open_settings}
 			aria-label="Settings"
+			title={capture_active ? 'Stop recording first to open Settings' : 'Settings'}
 		>
 			&#9881;
 		</button>
 	</div>
 </div>
 
-<!-- Options bar -->
+<!-- Capture path indicator: full packet capture is a Settings toggle now (so it
+     applies from the first packet, no mid-war restart). Here we only surface
+     where the .pcap is being written and a quick way to open it. -->
 {#if config}
 <div class="min-h-8 px-4 py-1.5 flex flex-col gap-1 border-b border-gray-700 bg-background">
-	<div class="flex gap-3 items-center">
-		<label class="flex items-center gap-2 cursor-pointer select-none">
-			<input
-				type="checkbox"
-				class="rounded border-gray-600"
-				bind:checked={config.record_pcap}
-				on:change={handle_pcap_toggle}
-			/>
-			<span class="text-caption">Full packet capture (.pcap)</span>
-			<span class="text-caption text-foreground-secondary"
-				>Saves the complete raw traffic so the team can find new fields. Share the file for
-				protocol research. Nothing is uploaded automatically.</span
-			>
-		</label>
-		{#if config.record_pcap && $recording_state === 'recording' && !pcap_path}
-			<span class="text-caption text-gold ml-2">Restart capture to apply</span>
-		{/if}
-	</div>
 	{#if pcap_path}
 		<div class="flex items-center gap-2">
 			<span class="text-caption text-status-ok">Full capture:</span>
@@ -338,15 +344,17 @@
 				on:click={reveal_pcap}>Show file</button
 			>
 		</div>
+	{:else}
+		<span class="text-caption text-status-ok">Full packet capture on, saving the raw .pcap...</span>
 	{/if}
 </div>
 {/if}
 
 <!-- Capture recovery panel -->
 {#if capture_error && error_info}
-	<div class="m-4 rounded-lg border border-rose-500/30 bg-rose-500/5 p-4 flex flex-col gap-3">
+	<div class="m-4 rounded-lg border border-status-error/30 bg-status-error/5 p-4 flex flex-col gap-3">
 		<div class="flex flex-col gap-1">
-			<span class="heading-h2 text-rose-300">{error_info.title}</span>
+			<span class="heading-h2 text-status-error">{error_info.title}</span>
 			<span class="text-caption text-foreground-secondary">{error_info.detail}</span>
 		</div>
 		<div class="flex flex-wrap gap-2">
@@ -382,4 +390,4 @@
 {/if}
 
 <!-- TODO: replace height={165} with get_remaining_height() from utils once utility exists -->
-<Logger {logs} height={165} {session_path} />
+<Logger {logs} height={165} {session_path} {pcap_path} />

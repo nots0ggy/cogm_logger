@@ -5,12 +5,16 @@
 	import {
 		get_date,
 		get_formatted_date,
+		get_config,
 		calculate_kd,
+		type Config,
 		PERSONAL_FAMILY_NAME_KEY,
 		type Log
 	} from './config';
 	import { filesystem, os, storage } from '@neutralinojs/lib';
 	import { ModalManager } from '../../svelte-ui/modal/modal-store';
+	import CogmUploadModal from '../cogm-upload-modal.svelte';
+	import { show_toast } from '../../svelte-ui/util';
 	import Select from './select.svelte';
 	import { dev } from '$app/environment';
 	import Button from '../../svelte-ui/elements/button.svelte';
@@ -23,6 +27,11 @@
 
 	const personal_stats_storage_key = PERSONAL_FAMILY_NAME_KEY;
 	let personal_family_name = '';
+
+	// config is loaded only for include_characters. name_order is deliberately NOT
+	// shared here: it lives in raw-packet column space (the live capture editor),
+	// while a parsed .log is always canonical (killer/victim/guild = 0/1/2).
+	let config: Config | undefined;
 
 	let player_one_index = 0;
 	let player_two_index = 1;
@@ -54,16 +63,21 @@
 			}
 			guild_index = new_value;
 		}
+		// Local-only remap for this opened file. Intentionally NOT persisted to
+		// config.name_order, which the live capture path owns.
 	}
 
 	function get_logs_string() {
 		return logs
 			.map((log) => {
-				const remaining_indicies = [0, 1, 2, 3, 4].filter(
-					(i) => i !== player_one_index && i !== player_two_index && i !== guild_index
-				);
-				const remaining_names = remaining_indicies.map((i) => log.names[i]);
-				const characters = ` (${remaining_names.join(',')})`;
+				let characters = '';
+				if (config?.include_characters) {
+					const remaining_indicies = [0, 1, 2, 3, 4].filter(
+						(i) => i !== player_one_index && i !== player_two_index && i !== guild_index
+					);
+					const remaining_names = remaining_indicies.map((i) => log.names[i]);
+					characters = ` (${remaining_names.join(',')})`;
+				}
 				return `[${log.time}] ${log.names[player_one_index]} ${
 					log.kill ? 'has killed' : 'died to'
 				} ${log.names[player_two_index]} from ${log.names[guild_index]}${characters}`;
@@ -73,9 +87,21 @@
 
 	async function save_logs() {
 		const path = await open_save_location(get_formatted_date(get_date()) + '.log');
+		if (!path) return;
 		filesystem.writeFile(path, get_logs_string());
 	}
 
+	// CoGM is the primary upload, same as the live editor.
+	async function open_cogm_upload() {
+		const cfg = await get_config();
+		if (!cfg.cogm_token) {
+			show_toast('Set your CoGM token in Settings first', 'error');
+			return;
+		}
+		ModalManager.open(CogmUploadModal, { logs_string: get_logs_string() });
+	}
+
+	// Legacy ikusa.site upload, demoted to a secondary action.
 	async function upload() {
 		const website = dev ? 'http://localhost:5174' : 'https://ikusa.site';
 		const result = await fetch(website + '/api/create', {
@@ -164,20 +190,26 @@
 
 	onMount(async () => {
 		personal_family_name = await storage.getData(personal_stats_storage_key).catch(() => '');
+		// A parsed .log is always canonical: names[0]=killer, [1]=victim, [2]=guild
+		// (open/+page.svelte). Keep those defaults; do NOT apply the live capture's
+		// name_order (raw-packet column space) here, it would scramble
+		// killer/victim/guild on Upload to CoGM. config is loaded only for
+		// include_characters.
+		config = await get_config();
 	});
 </script>
 
 {#if logs.length > 0}
-	<span class="absolute top-2 left-0 right-0 text-center text-gray-400 text-sm"
-		>Adjust the Logs to: <b>Family-Name-1</b> kills/died to
-		<b>Family-Name-2</b> from <b>Guild</b></span
+	<span class="absolute top-2 left-0 right-0 text-center text-caption"
+		>Set which column is <b class="text-status-ok">Killer</b>, <b class="text-status-error">Victim</b
+		>, and <b class="text-gold">Guild</b></span
 	>
 {/if}
-<div class="flex flex-col gap-2 items-center w-full h-full relative">
+<div class="flex flex-col gap-2 items-center w-full flex-1 min-h-0 relative">
 	<div class="flex gap-1 items-center justify-start w-full">
 		<p class="text-xs sm:text-sm text-gray-300">{logs.length} logs</p>
 	</div>
-	<div class="w-full flex gap-2 pb-14" style="height: {height}px;">
+	<div class="w-full flex gap-2 pb-20 flex-1 min-h-0" style="min-height: {height}px;">
 		<div class="w-[550px] flex-shrink-0 rounded-lg border border-gray-700 overflow-hidden p-2 relative h-full">
 		{#if loading && logs.length === 0}
 			<div class="absolute inset-0 flex justify-center items-center mb-14">
@@ -192,7 +224,6 @@
 			<VirtualList items={logs} let:item={log}>
 				<div class="flex gap-2 group py-1 items-center px-1">
 					<p class="text-sm text-gray-400">{log.time}</p>
-					<!-- <p>{log.names[player_one_index].name}</p> -->
 					<Select
 						options={log.names}
 						selected_value={player_one_index}
@@ -200,9 +231,9 @@
 					/>
 					<div class="flex justify-center items-center w-16">
 						{#if log.kill}
-							<p class="self-center text-submarine-500">killed</p>
+							<p class="self-center text-status-ok">killed</p>
 						{:else}
-							<p class="self-center text-red-500">died to</p>
+							<p class="self-center text-status-error">died to</p>
 						{/if}
 					</div>
 					<Select
@@ -222,11 +253,11 @@
 		</div>
 		<!-- Stats panel fills the remaining right space -->
 		<div class="flex-1 flex flex-col gap-2 text-xs h-full overflow-y-auto">
-			<div class="rounded-lg border border-gray-700 p-2.5">
+			<div class="rounded-lg border border-gray-700 bg-background-secondary p-2.5">
 				<div class="flex items-center justify-between gap-1 mb-1.5">
-					<p class="uppercase tracking-wide text-gray-400">War Overview</p>
+					<span class="heading-h2">War Overview</span>
 					<button
-						class="bg-gray-700 px-1.5 py-0.5 rounded"
+						class="text-caption hover:text-foreground transition-colors"
 						on:click={() => {
 							ModalManager.open(GuildInfos, {
 								logs: logs,
@@ -238,76 +269,83 @@
 					>
 				</div>
 				{#if logs.length === 0}
-					<p class="text-gray-500">No logs yet</p>
+					<p class="text-caption">No logs yet</p>
 				{:else}
-					<p class="text-gray-400">{own_guild_member_count} vs {enemy_count} players</p>
-					<p class="mt-1">
-						<span class="text-submarine-500">K {alliance_overview.own.kills}</span>
-						<span class="text-gray-500 mx-1">·</span>
-						<span class="text-red-500">D {alliance_overview.own.deaths}</span>
-						<span class="text-gray-500 mx-1">·</span>
-						<span class="font-semibold">{calculate_kd(alliance_overview.own.kills, alliance_overview.own.deaths)}</span>
+					<p class="text-foreground-secondary">{own_guild_member_count} vs {enemy_count} players</p>
+					<p class="mt-1 tabular-nums">
+						<span class="text-status-ok">K {alliance_overview.own.kills}</span>
+						<span class="text-foreground-secondary mx-1">·</span>
+						<span class="text-status-error">D {alliance_overview.own.deaths}</span>
+						<span class="text-foreground-secondary mx-1">·</span>
+						<span class="text-gold font-semibold">{calculate_kd(alliance_overview.own.kills, alliance_overview.own.deaths)}</span>
 					</p>
-					<p class="text-gray-400 mt-0.5">Enemy K/D: <span class="font-semibold text-foreground-secondary">{calculate_kd(alliance_overview.enemy.kills, alliance_overview.enemy.deaths)}</span></p>
+					<p class="text-caption mt-0.5">Enemy K/D: <span class="font-semibold text-foreground-secondary">{calculate_kd(alliance_overview.enemy.kills, alliance_overview.enemy.deaths)}</span></p>
 				{/if}
 			</div>
-			<div class="rounded-lg border border-gray-700 p-2.5">
-				<p class="uppercase tracking-wide text-gray-400 mb-1.5">Personal</p>
+			<div class="rounded-lg border border-gray-700 bg-background-secondary p-2.5">
+				<span class="heading-h2">Personal</span>
 				<input
-					class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 mb-1.5"
+					class="w-full mt-1.5 bg-background border border-gray-700 rounded px-2 py-1 text-foreground mb-1.5"
 					placeholder="Family name"
 					value={personal_family_name}
 					on:input={handle_personal_family_name_input}
 				/>
 				{#if !personal_family_name.trim()}
-					<p class="text-gray-500">Enter your family name</p>
+					<p class="text-caption">Enter your family name</p>
 				{:else}
-					<p>
-						<span class="text-submarine-500">K {personal_stats.kills}</span>
-						<span class="text-gray-500 mx-1">·</span>
-						<span class="text-red-500">D {personal_stats.deaths}</span>
-						<span class="text-gray-500 mx-1">·</span>
-						<span class="font-semibold">{calculate_kd(personal_stats.kills, personal_stats.deaths)}</span>
+					<p class="tabular-nums">
+						<span class="text-status-ok">K {personal_stats.kills}</span>
+						<span class="text-foreground-secondary mx-1">·</span>
+						<span class="text-status-error">D {personal_stats.deaths}</span>
+						<span class="text-foreground-secondary mx-1">·</span>
+						<span class="text-gold font-semibold">{calculate_kd(personal_stats.kills, personal_stats.deaths)}</span>
 					</p>
 				{/if}
 			</div>
-			<div class="rounded-lg border border-gray-700 p-2.5">
-				<p class="uppercase tracking-wide text-gray-400 mb-2">K/D Breakdown</p>
+			<div class="rounded-lg border border-gray-700 bg-background-secondary p-2.5">
+				<span class="heading-h2">K/D Breakdown</span>
 				{#if logs.length === 0}
-					<p class="text-gray-500">No logs yet</p>
+					<p class="text-caption mt-1.5">No logs yet</p>
 				{:else}
-					<div class="mb-3">
+					<div class="mb-3 mt-1.5">
 						<div class="flex justify-between mb-1">
-							<span class="text-gray-400">Your Alliance</span>
-							<span class="font-semibold">{calculate_kd(alliance_overview.own.kills, alliance_overview.own.deaths)}</span>
+							<span class="text-foreground-secondary">Your Alliance</span>
+							<span class="text-gold font-semibold tabular-nums">{calculate_kd(alliance_overview.own.kills, alliance_overview.own.deaths)}</span>
 						</div>
 						<div class="h-1.5 rounded-full bg-gray-700 overflow-hidden">
-							<div class="h-full bg-submarine-500 transition-all" style="width: {ownKillPct}%"></div>
+							<div class="h-full bg-status-ok transition-all" style="width: {ownKillPct}%"></div>
 						</div>
-						<div class="flex justify-between mt-1 text-gray-500">
-							<span class="text-submarine-500">K {alliance_overview.own.kills}</span>
-							<span class="text-red-500">D {alliance_overview.own.deaths}</span>
+						<div class="flex justify-between mt-1 tabular-nums">
+							<span class="text-status-ok">K {alliance_overview.own.kills}</span>
+							<span class="text-status-error">D {alliance_overview.own.deaths}</span>
 						</div>
 					</div>
 					<div>
 						<div class="flex justify-between mb-1">
-							<span class="text-gray-400">Enemy</span>
-							<span class="font-semibold">{calculate_kd(alliance_overview.enemy.kills, alliance_overview.enemy.deaths)}</span>
+							<span class="text-foreground-secondary">Enemy</span>
+							<span class="font-semibold tabular-nums">{calculate_kd(alliance_overview.enemy.kills, alliance_overview.enemy.deaths)}</span>
 						</div>
 						<div class="h-1.5 rounded-full bg-gray-700 overflow-hidden">
-							<div class="h-full bg-red-500 transition-all" style="width: {enemyKillPct}%"></div>
+							<div class="h-full bg-status-error transition-all" style="width: {enemyKillPct}%"></div>
 						</div>
-						<div class="flex justify-between mt-1 text-gray-500">
-							<span class="text-submarine-500">K {alliance_overview.enemy.kills}</span>
-							<span class="text-red-500">D {alliance_overview.enemy.deaths}</span>
+						<div class="flex justify-between mt-1 tabular-nums">
+							<span class="text-status-ok">K {alliance_overview.enemy.kills}</span>
+							<span class="text-status-error">D {alliance_overview.enemy.deaths}</span>
 						</div>
 					</div>
 				{/if}
 			</div>
 		</div>
 	</div>
-	<div class="fixed bottom-4 left-0 right-0 flex gap-2 justify-center">
-		<Button class="w-32" on:click={upload} {disabled}>Upload</Button>
-		<Button class="w-32" on:click={save_logs} color="secondary" {disabled}>Save</Button>
+	<!-- Same action bar as the live editor: CoGM is the prominent action, Save
+	     secondary, the legacy ikusa.site upload demoted to grey on the right. -->
+	<div
+		class="fixed bottom-0 left-0 right-0 z-20 border-t border-gray-700 bg-background/95 backdrop-blur"
+	>
+		<div class="max-w-4xl mx-auto flex gap-2 justify-center py-3 px-4">
+			<Button class="w-40" on:click={open_cogm_upload} {disabled}>Upload to CoGM</Button>
+			<Button class="w-32" on:click={save_logs} color="secondary" {disabled}>Save</Button>
+			<Button class="w-36" on:click={upload} color="secondary" {disabled}>Upload (Ikusa)</Button>
+		</div>
 	</div>
 </div>

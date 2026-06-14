@@ -61,7 +61,18 @@ export async function check_status(): Promise<LoggerStatus> {
 	};
 	await start_logger(logger_callback, 'status');
 
+	// Resolve on the subprocess 'terminated' event, but never hang the UI: if the
+	// status check stalls or never terminates, fall back to the current
+	// best-guess status after a timeout so `loading` can clear and the Record
+	// button stays reachable instead of being disabled forever.
 	return new Promise((res) => {
-		resolve = res;
+		let settled = false;
+		const finish = (value: LoggerStatus) => {
+			if (settled) return;
+			settled = true;
+			res(value);
+		};
+		resolve = finish;
+		setTimeout(() => finish(logger_status), 8000);
 	});
 }

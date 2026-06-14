@@ -80,10 +80,10 @@
 			<LoadingIndicator />
 		{:else if status?.npcap_installed}
 			<StatusDot state="ok" size={8} />
-			<span class="text-caption">Npcap ready</span>
+			<span class="text-caption">Ready to record</span>
 		{:else}
 			<StatusDot state="error" size={8} />
-			<span class="text-caption">Npcap missing</span>
+			<span class="text-caption text-gold">Npcap required to capture</span>
 			<button
 				class="text-caption text-gold underline hover:text-gold-200 transition-colors"
 				on:click={() => os.open('https://npcap.com/dist/npcap-1.78.exe')}
@@ -104,17 +104,33 @@
 		</button>
 	{/if}
 
-	<!-- Primary CTA -->
-	<Button class="w-full h-12" on:click={() => goto('/record')}>Record</Button>
+	<!-- Primary CTA: the app's one job, so make it the clear hero. Gate ONLY on a
+	     definitive "Npcap missing" so a stalled/unknown status never disables the
+	     button forever (the /record page surfaces the real error and the recovery
+	     panel if something is actually wrong). -->
+	<div>
+		<Button
+			class="w-full h-14 text-base font-semibold"
+			on:click={() => goto('/record')}
+			disabled={status?.npcap_installed === false}
+		>
+			Record
+		</Button>
+		<p class="text-caption text-center mt-1.5">
+			{status?.npcap_installed === false ? 'Install Npcap to start capturing' : 'Start capturing your guild war'}
+		</p>
+	</div>
 
-	<!-- Recover banner: only when an unsaved session is on disk -->
+	<!-- Recover banner: an attention prompt after a crash, not a success state. -->
 	{#if recoverable_logs > 0}
 		<button
-			class="flex items-center justify-between gap-2 h-11 px-4 rounded-md border border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10 transition-colors"
+			class="flex items-center justify-between gap-2 h-12 px-4 rounded-md border border-gold/40 bg-gold/10 hover:bg-gold/15 transition-colors"
 			on:click={() => goto('/recover')}
 		>
-			<span class="text-caption text-emerald-300 font-semibold">Recover last session</span>
-			<span class="text-caption text-foreground-secondary">{recoverable_logs} logs found</span>
+			<span class="text-sm text-gold font-semibold">Recover last session</span>
+			<span class="text-caption text-foreground-secondary"
+				>{recoverable_logs} events from your last session</span
+			>
 		</button>
 	{/if}
 

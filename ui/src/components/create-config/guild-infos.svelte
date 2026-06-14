@@ -56,7 +56,7 @@
 
 {#if logs.length > 0}
 	<div class="flex flex-col gap-3 min-w-[480px]">
-		<p class="text-xs uppercase tracking-wide text-gray-400">Alliance Overview</p>
+		<span class="heading-h2">Alliance Overview</span>
 		<div class="grid gap-2 max-h-[65vh] overflow-auto pr-1" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr))">
 			<GuildInfo
 				name={'Your Guild'}
@@ -75,5 +75,5 @@
 		</div>
 	</div>
 {:else}
-	<p class="text-gray-400 text-sm">No logs available.</p>
+	<p class="text-caption">No logs available.</p>
 {/if}

@@ -48,7 +48,7 @@ const config = {
 	   900: '#231f08'
 	  },
 	  green: {
-	   DEFAULT: '1f5b26',
+	   DEFAULT: '#1f5b26',
 	   50: '#f2f6f3',
 	   100: '#e0efe6',
 	   200: '#b8e5c7',

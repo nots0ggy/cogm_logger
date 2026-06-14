@@ -13,5 +13,5 @@
 	type="checkbox"
 	name={$$props.name}
 	id={$$props.id}
-	class="text-gold focus:ring-gold w-4 h-4 bg-gray-100 border-gray-300 dark:ring-offset-gray-800 focus:ring-2 mr-2 dark:bg-gray-700 dark:border-gray-600 rounded {$$props.class}"
+	class="text-gold focus:ring-gold w-4 h-4 bg-background border-gray-700 dark:ring-offset-gray-800 focus:ring-2 mr-2 dark:bg-background dark:border-gray-700 rounded {$$props.class}"
 />

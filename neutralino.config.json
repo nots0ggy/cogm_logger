@@ -1,6 +1,6 @@
 {
 	"applicationId": "ikusa.logger",
-	"version": "1.12.0",
+	"version": "1.13.0",
 	"defaultMode": "window",
 	"documentRoot": "/ui/build/",
 	"url": "/",
@@ -11,6 +11,10 @@
 		"filesystem.readFile",
 		"filesystem.writeFile",
 		"filesystem.writeBinaryFile",
+		"filesystem.createDirectory",
+		"filesystem.remove",
+		"filesystem.readDirectory",
+		"filesystem.getStats",
 		"os.open",
 		"os.showOpenDialog",
 		"os.showSaveDialog",

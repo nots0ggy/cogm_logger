@@ -50,7 +50,7 @@
 {:else}
 	<!-- Recovered: load straight into the editor so you can set name order and save/upload -->
 	<div class="h-10 flex items-center px-1 gap-3 border-b border-gray-700 mb-3">
-		<span class="heading-h2 text-emerald-300">Recovered session</span>
+		<span class="heading-h2 text-status-ok">Recovered session</span>
 		<span class="text-foreground-secondary text-caption">·</span>
 		<span class="text-caption tabular-nums">{logs.length} logs</span>
 		<span class="text-foreground-secondary text-caption truncate">· {filename}</span>

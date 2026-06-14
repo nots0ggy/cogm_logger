@@ -50,12 +50,19 @@ current_position = 0
 # file behind. None when not live-capturing (e.g. offline pcap analysis).
 _log_file = None
 
+# Persistent full-packet pcap writer for the always-on capture. start_sniff
+# opens it once (append=False, sync=False); package_handler writes through it.
+# A single long-lived writer avoids the per-packet open+append that lagged the
+# sniff thread and dropped packets at war rates. None when not recording.
+_pcap_writer = None
+_pcap_count = 0
+
 identifier_regex = r"[56][0-9a-f]0100[0-9a-f]{4}"
 name_regex = r"^[A-Z][a-zA-Z0-9_]{2,15}$"
 
 
 def package_handler(package, output, ip_filter=True, record_pcap_path=None):
-    global last_payload
+    global last_payload, _pcap_writer, _pcap_count
 
     if "IP" not in package:
         return
@@ -79,14 +86,17 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
     # checkes if the packages comes from a tcp stream
     uses_tcp = "TCP" in package and hasattr(package["TCP"].payload, "load")
     if is_bdo_ip and uses_tcp:
-        # write the raw packet to pcap before parsing so we still capture
-        # subtype packets that don't yield a 5-name match. Lazy import so
-        # PyInstaller's modulegraph doesn't choke on scapy.utils at the
-        # module top level (it was marking the whole file as invalid).
-        if record_pcap_path is not None:
+        # Write the raw packet to the always-on pcap before parsing so we still
+        # capture subtype packets that don't yield a 5-name match. Goes through
+        # the single long-lived _pcap_writer (opened in start_sniff) instead of
+        # a per-packet open+append, which lagged the sniff thread and dropped
+        # packets at war rates.
+        if _pcap_writer is not None:
             try:
-                from scapy.utils import wrpcap
-                wrpcap(record_pcap_path, package, append=True)
+                _pcap_writer.write(package)
+                _pcap_count += 1
+                if _pcap_count % 100 == 0:
+                    _pcap_writer.flush()
             except Exception as exc:
                 print(f"pcap write failed: {exc}", flush=True)
 
@@ -212,13 +222,28 @@ def read_network_interfaces():
 
 
 def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=None):
-    global _log_file
+    global _log_file, _pcap_writer, _pcap_count
     try:
         print("Reading Network...", flush=True)
         if record_pcap_path is not None:
             # Absolute path so the UI can show the user exactly where the
             # full-packet capture lands (for sharing it in for research).
             print(f"Saving pcap to {os.path.abspath(record_pcap_path)}", flush=True)
+            # One long-lived writer for the whole session. append=False starts a
+            # fresh file; sync=False avoids an fsync per packet. The old
+            # per-packet open+append lagged the sniff thread and dropped packets
+            # at war rates. Lazy import (PyInstaller modulegraph). makedirs
+            # first: captures/ may not exist yet.
+            try:
+                from scapy.utils import PcapWriter
+                pcap_dir = os.path.dirname(record_pcap_path)
+                if pcap_dir:
+                    os.makedirs(pcap_dir, exist_ok=True)
+                _pcap_writer = PcapWriter(record_pcap_path, append=False, sync=False)
+                _pcap_count = 0
+            except Exception as pcap_err:
+                _pcap_writer = None
+                print(f"pcap capture unavailable: {pcap_err}", flush=True)
         # Open the durable recovery file before sniffing. makedirs because the
         # default output lives under logger/.tmp which may not exist yet.
         try:
@@ -254,3 +279,10 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
             except Exception:
                 pass
             _log_file = None
+        if _pcap_writer is not None:
+            try:
+                _pcap_writer.flush()
+                _pcap_writer.close()
+            except Exception:
+                pass
+            _pcap_writer = None

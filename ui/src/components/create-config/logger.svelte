@@ -36,9 +36,32 @@
 	// user has preserved the logs via Save or Upload, so the home screen
 	// doesn't keep offering to recover an already-saved session.
 	export let session_path: string | null = null;
+	// The on-disk full-packet .pcap for the live session, when one is being
+	// written. Copied next to the saved .log so the raw bytes always travel with
+	// the war.
+	export let pcap_path = '';
 
 	async function clear_session() {
 		if (!session_path) return;
+		// TEMPORARY (remove once the kill offset is locked in): before deleting the
+		// raw session, stash a copy in captures/ so a Save/Upload doesn't destroy
+		// the per-event hex we need to recalibrate the kill byte. captures/ is
+		// outside logger/.tmp, so the recover scan won't re-surface it. Best
+		// effort: keeping the copy must never block the save.
+		try {
+			const raw = await filesystem.readFile(session_path);
+			if (raw) {
+				try {
+					await filesystem.createDirectory('captures');
+				} catch {
+					/* already exists */
+				}
+				const name = session_path.split(/[\\/]/).pop() || 'session.log';
+				await filesystem.writeFile(`captures/raw-${name}`, raw);
+			}
+		} catch {
+			/* ignore: the save proceeds regardless */
+		}
 		try {
 			await filesystem.remove(session_path);
 		} catch {
@@ -56,12 +79,6 @@
 
 	let possible_kill_offsets: number[] = [];
 	let kill_index = 0;
-	// sch-28's calibrated kill-flag offset (config.ini kill=141). The live path
-	// historically threw this away and re-guessed with find_kill_offset, which
-	// regresses K/D toward 50/50 (see docs/kill-detection.md). Prefer the
-	// calibrated byte; keep the heuristic results as fallback candidates the
-	// config modal can still select if a BDO patch shifts it.
-	const CALIBRATED_KILL_OFFSET = 141;
 
 	let config: Config;
 	let auto_scroll = true;
@@ -154,11 +171,7 @@
 			logs.length % 100 === 0 ||
 			possible_name_offsets.length < (logs[0]?.names.length ?? 0)
 		) {
-			const detected = find_kill_offset(logs);
-			possible_kill_offsets = [
-				CALIBRATED_KILL_OFFSET,
-				...detected.filter((offset) => offset !== CALIBRATED_KILL_OFFSET)
-			];
+			possible_kill_offsets = find_kill_offset(logs).map((offset) => offset);
 			calculate_config();
 		} else {
 			write_live_output();
@@ -428,8 +441,40 @@
 		const path = await open_save_location(get_formatted_date(get_date()) + '.log');
 		if (!path) return; // user cancelled the dialog
 		await filesystem.writeFile(path, get_logs_string());
+		// Drop the raw session (with hex) and the full pcap next to the .log
+		// automatically, so the bytes for recalibration always travel with the war.
+		await save_companions(path);
 		// The session is now preserved to a real file; drop the recovery copy.
 		await clear_session();
+	}
+
+	// Copy the raw session and the pcap into the same folder the user just saved
+	// the .log to, named after it. Best effort: a copy failure never blocks the
+	// save. The pcap is copied via the shell so a large file isn't loaded into
+	// memory; the raw session is small text.
+	async function save_companions(log_path: string) {
+		const slash = Math.max(log_path.lastIndexOf('/'), log_path.lastIndexOf('\\'));
+		const folder = slash >= 0 ? log_path.slice(0, slash) : '.';
+		const sep = log_path.includes('\\') ? '\\' : '/';
+		const base = log_path.slice(slash + 1).replace(/\.log$/i, '');
+		if (session_path) {
+			try {
+				const raw = await filesystem.readFile(session_path);
+				if (raw) await filesystem.writeFile(`${folder}${sep}${base}.raw.log`, raw);
+			} catch {
+				/* best effort */
+			}
+		}
+		if (pcap_path) {
+			try {
+				const dst = `${folder}${sep}${base}.pcap`;
+				const cmd =
+					NL_OS === 'Windows' ? `copy /Y "${pcap_path}" "${dst}"` : `cp "${pcap_path}" "${dst}"`;
+				await os.execCommand(cmd);
+			} catch {
+				/* best effort */
+			}
+		}
 	}
 
 	async function write_live_output() {
@@ -696,7 +741,7 @@
 			<Icon icon={IoMdSettings} />
 		</button>
 	</div>
-	<div class="w-full flex gap-2 pb-14 flex-1 min-h-0" style="min-height: {height}px;">
+	<div class="w-full flex gap-2 pb-20 flex-1 min-h-0" style="min-height: {height}px;">
 		<div class="w-[550px] flex-shrink-0 rounded-lg border border-gray-700 overflow-hidden p-2 relative h-full">
 		{#if loading && logs.length === 0}
 			<div class="absolute inset-0 flex justify-center items-center mb-14">
@@ -838,9 +883,17 @@
 			</div>
 		</div>
 	</div>
-	<div class="fixed bottom-4 left-0 right-0 flex gap-2 justify-center">
-		<Button class="w-32" on:click={upload} {disabled}>Upload</Button>
-		<Button class="w-32" on:click={save_logs} color="secondary" {disabled}>Save</Button>
-		<Button class="w-36" on:click={open_cogm_upload} color="secondary" {disabled}>Upload to CoGM</Button>
+	<!-- Real bottom action bar: a full-width opaque, blurred strip with a top
+	     border so the feed and stats no longer scroll behind floating buttons.
+	     CoGM is the prominent (gold) action; Save secondary; the legacy
+	     ikusa.site upload is demoted to a grey secondary on the right. -->
+	<div
+		class="fixed bottom-0 left-0 right-0 z-20 border-t border-gray-700 bg-background/95 backdrop-blur"
+	>
+		<div class="max-w-4xl mx-auto flex gap-2 justify-center py-3 px-4">
+			<Button class="w-40" on:click={open_cogm_upload} {disabled}>Upload to CoGM</Button>
+			<Button class="w-32" on:click={save_logs} color="secondary" {disabled}>Save</Button>
+			<Button class="w-36" on:click={upload} color="secondary" {disabled}>Upload (Ikusa)</Button>
+		</div>
 	</div>
 </div>

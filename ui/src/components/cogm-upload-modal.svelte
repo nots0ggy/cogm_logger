@@ -35,7 +35,9 @@
 		return `${dd}.${mm}.${yyyy}`;
 	}
 
-	// Form fields
+	// Form fields. All optional: name is the event title, prefilled with the date
+	// (DD.MM.YYYY) as a default the user can overwrite; the rest carry defaults
+	// too, so a war can be uploaded in one click.
 	let event_name = local_name();
 	let event_type: 'nodewar' | 'siege' | 'gvg' | 'other' = 'nodewar';
 	let tier: 't1' | 'capped' | 'uncapped' = 'capped';
@@ -103,9 +105,11 @@
 		const base = (config.cogm_url || 'https://cogm.app').replace(/\/$/, '');
 		const { isCapped, isT1 } = tier_payload(tier);
 		const body: Record<string, any> = {
-			name: event_name,
+			// Blank name falls back to the date as the title; blank/invalid date
+			// falls back to today, so a one-click upload still has both.
+			name: event_name.trim() || local_name(),
 			type: event_type,
-			date: event_date,
+			date: /^\d{4}-\d{2}-\d{2}$/.test(event_date) ? event_date : local_date(),
 			isCapped,
 			isT1,
 			logContent: logs_string
@@ -247,22 +251,25 @@
 		{ label: 'Uncapped', value: 'uncapped' }
 	];
 
-	// Guard the date too: clearing the date input sends an empty string the
-	// server rejects with a 400. Require the YYYY-MM-DD shape up front.
-	$: upload_disabled = !event_name.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(event_date);
+	// Everything is optional so a war can be uploaded in one click. Blanks get
+	// sensible defaults at send time (name -> date, date -> today), so the
+	// button stays enabled.
+	$: upload_disabled = false;
 </script>
 
 <div class="w-80 flex flex-col gap-4">
 	{#if state === 'form'}
 		<h3 class="font-bold text-foreground">Upload to CoGM</h3>
+		<p class="text-caption -mt-2">All optional. Upload as-is for a quick one.</p>
 
 		<div>
-			<p class="text-sm text-foreground mb-1">Event Name</p>
+			<p class="text-sm text-foreground mb-1">
+				Event name <span class="text-foreground-secondary">(optional)</span>
+			</p>
 			<input
 				class="w-full bg-background border border-gray-700 rounded px-2 py-1.5 text-foreground text-sm"
-				placeholder="Event name"
+				placeholder="Title for this war, defaults to the date"
 				bind:value={event_name}
-				required
 			/>
 		</div>
 
@@ -323,7 +330,7 @@
 		</div>
 
 		{#if form_error}
-			<p class="text-xs text-red-400">{form_error}</p>
+			<p class="text-xs text-status-error">{form_error}</p>
 		{/if}
 
 		<div class="flex gap-2 justify-end pt-1">
@@ -333,6 +340,7 @@
 
 	{:else if state === 'uploading'}
 		<h3 class="font-bold text-foreground">Uploading...</h3>
+		<div class="h-1 w-full rounded-full bg-gold/30 animate-pulse-rec"></div>
 		<p class="text-sm text-foreground-secondary">{progress_note}</p>
 		<p class="text-caption">
 			The event is already created in CoGM. Closing here just stops the progress view. Check the
@@ -349,10 +357,10 @@
 				The upload may still be processing. Check the CoGM dashboard for results.
 			</p>
 		{:else if failed}
-			<h3 class="font-bold text-foreground">Upload failed</h3>
-			<p class="text-sm text-red-400">{fail_message}</p>
+			<h3 class="font-bold text-status-error">Upload failed</h3>
+			<p class="text-sm text-status-error">{fail_message}</p>
 		{:else}
-			<h3 class="font-bold text-foreground">Upload complete</h3>
+			<h3 class="font-bold text-status-ok">Upload complete</h3>
 			{#if poll_result}
 				{#if poll_result.parsed !== undefined && poll_result.guildsFound !== undefined}
 					<p class="text-sm text-foreground-secondary">
@@ -365,8 +373,19 @@
 			{/if}
 		{/if}
 		<div class="flex gap-2 justify-end pt-1">
+			{#if failed}
+				<Button
+					color="secondary"
+					on:click={() => {
+						failed = false;
+						timed_out = false;
+						fail_message = '';
+						state = 'form';
+					}}>Try again</Button
+				>
+			{/if}
 			{#if !timed_out && !failed && event_url}
-				<Button color="secondary" on:click={open_in_cogm}>Open in CoGM</Button>
+				<Button on:click={open_in_cogm}>Open in CoGM</Button>
 			{/if}
 			<Button color="secondary" on:click={close}>Close</Button>
 		</div>
