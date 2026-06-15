@@ -485,6 +485,78 @@
 		return output;
 	}
 
+	// ── Kill-location coords for the CoGM heatmap ──────────────────────────
+	// BDO writes each kill's world position into the packet tail: little-endian
+	// float32 at byte 350 (X, east/west) and byte 358 (Z, north/south). Byte 354
+	// is height (Y), which the heatmap doesn't use. Captures from before 1.15.0
+	// truncated the packet ahead of these bytes, so parse defensively: a kill
+	// whose hex is too short, whose floats are non-finite, or whose values fall
+	// outside the BDO world is simply skipped. The upload still carries every
+	// kill — only the heatmap gets sparser. CoGM never requires these.
+	const COORD_X_HEX = 700; // byte 350 * 2
+	const COORD_Z_HEX = 716; // byte 358 * 2
+	// The map transform is px = 17299 + X/100 over a 32768px map, so real coords
+	// sit within roughly ±1.8M. Anything past this is a misparse (wrong offset /
+	// partial packet); drop it rather than plot a kill in the void.
+	const COORD_WORLD_LIMIT = 3_000_000;
+
+	function read_le_float32(hex: string, hex_offset: number): number | null {
+		const slice = hex.slice(hex_offset, hex_offset + 8);
+		if (slice.length < 8) return null;
+		const bytes = new Uint8Array(4);
+		for (let i = 0; i < 4; i++) {
+			const byte = parseInt(slice.slice(i * 2, i * 2 + 2), 16);
+			if (Number.isNaN(byte)) return null;
+			bytes[i] = byte;
+		}
+		const value = new DataView(bytes.buffer).getFloat32(0, true);
+		return Number.isFinite(value) ? value : null;
+	}
+
+	function parse_kill_coord(hex: string): { x: number; z: number } | null {
+		if (!hex || hex.length < COORD_Z_HEX + 8) return null;
+		const x = read_le_float32(hex, COORD_X_HEX);
+		const z = read_le_float32(hex, COORD_Z_HEX);
+		if (x === null || z === null) return null;
+		if (Math.abs(x) > COORD_WORLD_LIMIT || Math.abs(z) > COORD_WORLD_LIMIT) return null;
+		return { x, z };
+	}
+
+	// Per-kill coords keyed by (time, killer-family, victim-family) so CoGM binds
+	// each coord to its kill by identity, never by position. Killer/victim follow
+	// the same direction flip as the .log line ("died to" swaps the two names), so
+	// the keys line up with what CoGM's log parser extracts. Returns [] when no
+	// kill carried a parseable coord (older capture / non-node-war format), in
+	// which case the modal sends no coords at all.
+	function get_coords() {
+		const out: { t: string; k: string; v: string; x: number; z: number }[] = [];
+		for (const log of logs) {
+			// Per-kill guard: coords are an optional overlay, so a single malformed
+			// packet must skip only its own coord, never throw out of get_coords and
+			// block the .log upload that carries the kill itself.
+			try {
+				const coord = parse_kill_coord(log.hex);
+				if (!coord) continue;
+				const is_kill = log.hex[possible_kill_offsets[kill_index]] === '1';
+				const player_one_name = get_name(player_one_index, log);
+				const player_two_name = get_name(player_two_index, log);
+				// An empty name means the column wasn't resolved; the matching .log
+				// line is unparseable too, so the coord could never bind — skip it.
+				if (!player_one_name || !player_two_name) continue;
+				out.push({
+					t: log.time,
+					k: is_kill ? player_one_name : player_two_name,
+					v: is_kill ? player_two_name : player_one_name,
+					x: coord.x,
+					z: coord.z
+				});
+			} catch {
+				continue;
+			}
+		}
+		return out;
+	}
+
 	async function save_logs() {
 		const path = await open_save_location(get_formatted_date(get_date()) + '.log');
 		if (!path) return; // user cancelled the dialog
@@ -665,6 +737,7 @@
 		}
 		ModalManager.open(CogmUploadModal, {
 			logs_string: get_logs_string(),
+			coords: get_coords(),
 			on_uploaded: clear_session
 		});
 	}

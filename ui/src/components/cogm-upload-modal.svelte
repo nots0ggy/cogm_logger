@@ -7,6 +7,11 @@
 	import { get_config } from './create-config/config';
 
 	export let logs_string: string;
+	// Optional per-kill world coords for the kill-location heatmap. Only the live
+	// capture path supplies these (it has the raw packet hex); a loaded .log file
+	// has no hex, so it opens the modal without coords and the heatmap stays empty
+	// for that upload. Content-keyed by (t, killer, victim) — see logger.svelte.
+	export let coords: { t: string; k: string; v: string; x: number; z: number }[] = [];
 	// Called once the event is created server-side (the war is preserved on
 	// CoGM), so the caller can drop its local crash-recovery copy.
 	export let on_uploaded: (() => void) | null = null;
@@ -115,6 +120,9 @@
 			logContent: logs_string
 		};
 		if (result) body.result = result;
+		// Only attach coords when the capture produced some — an empty array would
+		// just be dropped server-side anyway, and omitting it keeps the body lean.
+		if (coords.length > 0) body.coords = coords;
 
 		state = 'uploading';
 		form_error = '';
