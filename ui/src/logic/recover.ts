@@ -1,11 +1,10 @@
 import { filesystem } from '@neutralinojs/lib';
 import type { LogType } from '../components/create-config/config';
+import { get_capture_dir } from './paths';
 
-// The live capture engine writes each parsed record here as it happens
-// (logger/src/options/live_capture.py), so a crash leaves the session on
-// disk. The record page spawns the engine with no -o, so the default output
-// path is logger/.tmp/<date>.log.
-const SESSION_DIR = 'logger/.tmp';
+// The live capture engine writes each parsed record to a session-<ts>.log in
+// the capture folder (Documents/CoGM Logger) as it happens, so a crash leaves
+// the session on disk to recover.
 
 export type RecoverableSession = {
 	path: string;
@@ -33,26 +32,35 @@ function parse_line(line: string): LogType | null {
  * clean session that was already saved leaves nothing useful to recover).
  */
 export async function find_last_session(): Promise<RecoverableSession | null> {
-	let entries: { entry: string; type: string }[];
-	try {
-		entries = await filesystem.readDirectory(SESSION_DIR);
-	} catch {
-		return null; // dir doesn't exist yet
-	}
+	// Scan the current capture folder (Documents/CoGM Logger) plus the legacy
+	// install-dir location, so a session left by a pre-1.14 crash (when sessions
+	// lived in logger/.tmp) is still offered for recovery after updating. The
+	// legacy scan can be dropped in a later release.
+	const dirs = [await get_capture_dir(), 'logger/.tmp'];
 
-	const files = entries.filter((e) => e.type === 'FILE' && e.entry.endsWith('.log'));
-	if (files.length === 0) return null;
-
-	// Pick the newest by modified time.
+	// Pick the newest session-*.log across all scanned dirs by modified time.
+	// session- prefix excludes the raw-*/.pcap companions that share the folder.
 	let newest: { path: string; mtime: number } | null = null;
-	for (const f of files) {
-		const path = `${SESSION_DIR}/${f.entry}`;
+	for (const dir of dirs) {
+		let entries: { entry: string; type: string }[];
 		try {
-			const stats = await filesystem.getStats(path);
-			const mtime = stats.modifiedAt ?? 0;
-			if (!newest || mtime > newest.mtime) newest = { path, mtime };
+			entries = await filesystem.readDirectory(dir);
 		} catch {
-			/* skip unreadable */
+			continue; // dir doesn't exist
+		}
+		const dir_sep = dir.includes('\\') ? '\\' : '/';
+		const files = entries.filter(
+			(e) => e.type === 'FILE' && e.entry.startsWith('session-') && e.entry.endsWith('.log')
+		);
+		for (const f of files) {
+			const path = `${dir}${dir_sep}${f.entry}`;
+			try {
+				const stats = await filesystem.getStats(path);
+				const mtime = stats.modifiedAt ?? 0;
+				if (!newest || mtime > newest.mtime) newest = { path, mtime };
+			} catch {
+				/* skip unreadable */
+			}
 		}
 	}
 	if (!newest) return null;

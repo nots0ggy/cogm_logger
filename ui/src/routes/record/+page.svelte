@@ -11,6 +11,7 @@
 	import Logger from '../../components/create-config/logger.svelte';
 	import { get_config, type Config, type LogType } from '../../components/create-config/config';
 	import { recording_state, recording_started_at, packets_seen } from '../../logic/recording-store';
+	import { capture_path } from '../../logic/paths';
 	import StatusDot from '../../components/status-dot.svelte';
 	import Button from '../../svelte-ui/elements/button.svelte';
 	import { goto } from '$app/navigation';
@@ -165,7 +166,9 @@
 
 	onMount(async () => {
 		config = await get_config();
-		session_path = `logger/.tmp/session-${Date.now()}.log`;
+		// Documents/CoGM Logger/session-<ts>.log. The engine derives the .pcap
+		// path from this folder, so both land together in a writable location.
+		session_path = await capture_path(`session-${Date.now()}.log`);
 		recording_state.set('recording');
 		recording_started_at.set(Date.now());
 		packets_seen.set(0);

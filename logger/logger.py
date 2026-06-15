@@ -46,18 +46,20 @@ args = parser.parse_args()
 
 config.init("config.ini")
 
-# When -r is combined with -a, save the full raw capture into a top-level
-# captures/ folder with a readable, sortable name so it's easy to find and send
-# in for protocol research (the old path buried it next to the recovery file in
-# logger/.tmp, and Save deleted that file). Keeping it separate from .output
-# means the recovery .log can be cleared without touching the capture. Bare -r
+# When -r is combined with -a, save the full raw capture with a readable,
+# sortable name in the same folder as the recovery session (Documents/CoGM
+# Logger), so it's easy to find and send in for protocol research. Bare -r
 # (no -a) keeps its legacy behaviour via record.record().
 if args.record and args.analyze:
     from time import localtime, strftime
 
-    os.makedirs("captures", exist_ok=True)
+    # Put the .pcap next to the session file (-o), which the UI sets to
+    # Documents/CoGM Logger. start_sniff creates that dir (guarded), so the old
+    # unguarded makedirs("captures") under a non-writable install dir is gone.
+    # dirname falls back to "." for a bare -o.
+    capture_dir = os.path.dirname(args.output) or "."
     pcap_path = os.path.join(
-        "captures", "capture-" + strftime("%Y-%m-%d_%H-%M-%S", localtime()) + ".pcap"
+        capture_dir, "capture-" + strftime("%Y-%m-%d_%H-%M-%S", localtime()) + ".pcap"
     )
 else:
     pcap_path = None

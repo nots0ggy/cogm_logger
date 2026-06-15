@@ -44,20 +44,17 @@
 	async function clear_session() {
 		if (!session_path) return;
 		// TEMPORARY (remove once the kill offset is locked in): before deleting the
-		// raw session, stash a copy in captures/ so a Save/Upload doesn't destroy
-		// the per-event hex we need to recalibrate the kill byte. captures/ is
-		// outside logger/.tmp, so the recover scan won't re-surface it. Best
-		// effort: keeping the copy must never block the save.
+		// raw session, stash a copy alongside it (raw-<name>) so a Save/Upload
+		// doesn't destroy the per-event hex we need to recalibrate the kill byte.
+		// The recover scan only matches session-*.log, so a raw-* copy won't
+		// re-surface. Best effort: keeping the copy must never block the save.
 		try {
 			const raw = await filesystem.readFile(session_path);
 			if (raw) {
-				try {
-					await filesystem.createDirectory('captures');
-				} catch {
-					/* already exists */
-				}
+				const sep = session_path.includes('\\') ? '\\' : '/';
+				const folder = session_path.substring(0, session_path.lastIndexOf(sep)) || '.';
 				const name = session_path.split(/[\\/]/).pop() || 'session.log';
-				await filesystem.writeFile(`captures/raw-${name}`, raw);
+				await filesystem.writeFile(`${folder}${sep}raw-${name}`, raw);
 			}
 		} catch {
 			/* ignore: the save proceeds regardless */
