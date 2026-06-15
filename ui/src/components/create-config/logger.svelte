@@ -112,7 +112,7 @@
 		// is what made get_name(3)/get_name(4) throw on export, so Save and Upload
 		// silently failed. Leave the rebuilt columns in place.
 		if (logs.length === 0) {
-			possible_kill_offsets = [config.kill];
+			possible_kill_offsets = [DEFAULT_KILL_OFFSET];
 			possible_name_offsets = [
 				[{ offset: config.player_one, count: 1 }],
 				[{ offset: config.player_two, count: 1 }],
@@ -168,7 +168,7 @@
 			logs.length % 100 === 0 ||
 			possible_name_offsets.length < (logs[0]?.names.length ?? 0)
 		) {
-			possible_kill_offsets = find_kill_offset(logs).map((offset) => offset);
+			possible_kill_offsets = resolve_kill_offset(logs);
 			calculate_config();
 		} else {
 			write_live_output();
@@ -280,6 +280,57 @@
 		logs.length > 0 && possible_name_offsets.length > 0
 			? possible_name_offsets.map((_offsets, i) => get_name(i, logs[0]) || '-')
 			: [];
+
+	// The calibrated kill-direction byte (2026-06-14): byte 7, the 3rd byte after
+	// the 5-byte packet identifier. hex[15] (its low nibble) is '1' when the
+	// subject got the kill, '0' when they died. Validated against a full node-war
+	// board (error 4/1033, vs 448 for the old config.ini kill=141). This replaces
+	// both the stale 141 and the find_kill_offset heuristic, which ranked a
+	// UTF-16 name byte over the real flag (it prefers mostly-'00' bytes, but the
+	// direction byte is ~50/50, so it loses).
+	const DEFAULT_KILL_OFFSET = 15;
+
+	// True if the byte at hex[off-1..off] is a clean 0/1 flag (0x00 or 0x01)
+	// across every log. require_both also demands both values appear (used by the
+	// structural backup to auto-discover the flag; the default offset is trusted
+	// unless it's proven to be something other than a 0/1 byte).
+	function is_binary_flag(logs: LogType[], off: number, require_both: boolean) {
+		let saw0 = false;
+		let saw1 = false;
+		for (const log of logs) {
+			if (off >= log.hex.length || log.hex[off - 1] !== '0') return false;
+			const c = log.hex[off];
+			if (c === '0') saw0 = true;
+			else if (c === '1') saw1 = true;
+			else return false;
+		}
+		return require_both ? saw0 && saw1 : true;
+	}
+
+	// Structural backup: the lone post-identifier byte (outside the name fields)
+	// that reads as a clean {0x00,0x01} flag with both values seen. Self-heals if
+	// a future BDO patch shifts the direction byte off offset 15.
+	function structural_kill_offset(logs: LogType[]) {
+		const out: number[] = [];
+		const maxlen = Math.min(...logs.map((l) => l.hex.length));
+		const names = logs[0]?.names ?? [];
+		for (let off = 11; off < maxlen; off++) {
+			if (names.some((n) => off >= n.offset && off < n.offset + 64)) continue;
+			if (is_binary_flag(logs, off, true)) out.push(off);
+		}
+		return out;
+	}
+
+	// Default to the calibrated byte (offset 15). If it ever stops being a clean
+	// 0/1 flag (a packet-layout shift), fall back to structural detection, then to
+	// the legacy heuristic as a last resort.
+	function resolve_kill_offset(logs: LogType[]) {
+		if (logs.length === 0) return [DEFAULT_KILL_OFFSET];
+		if (is_binary_flag(logs, DEFAULT_KILL_OFFSET, false)) return [DEFAULT_KILL_OFFSET];
+		const structural = structural_kill_offset(logs);
+		if (structural.length) return structural;
+		return find_kill_offset(logs);
+	}
 
 	function find_kill_offset(logs: LogType[]) {
 		const all_indicies: number[] = [];

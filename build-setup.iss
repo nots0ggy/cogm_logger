@@ -2,7 +2,7 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "CoGM Logger"
-#define MyAppVersion "1.14.0"
+#define MyAppVersion "1.15.0"
 #define MyAppPublisher "CoGM"
 #define MyAppURL "https://cogm.app/"
 #define MyAppExeName "cogm-logger-win_x64.exe"

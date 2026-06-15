@@ -129,8 +129,15 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
 
             payload = payload[match_location:]
 
+            # Capture up to the full 363-byte kill packet (726 hex) so the tail
+            # floats (bytes 350-358 = hex 700-716 = the kill's world X/Y/Z) ride
+            # along when they're in the buffer. The gate and advance stay at the
+            # proven-safe 600: names live in the first 600, the identifier re-scan
+            # self-corrects, and raising them to 726 would drop any kill packet
+            # shorter than that. If only 600-725 hex is buffered, the coords are
+            # simply truncated for that one kill (optional data, never required).
             if len(payload) >= 600:
-                possible_log = payload[0:600]
+                possible_log = payload[0:726]
                 i = 0
                 names = []
                 while i < 600:
