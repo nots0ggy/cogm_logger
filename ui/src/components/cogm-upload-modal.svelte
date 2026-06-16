@@ -11,7 +11,7 @@
 	// capture path supplies these (it has the raw packet hex); a loaded .log file
 	// has no hex, so it opens the modal without coords and the heatmap stays empty
 	// for that upload. Content-keyed by (t, killer, victim) — see logger.svelte.
-	export let coords: { t: string; k: string; v: string; x: number; z: number }[] = [];
+	export let coords: { t: string; k: string; v: string; x: number; z: number; y: number | null }[] = [];
 	// Called once the event is created server-side (the war is preserved on
 	// CoGM), so the caller can drop its local crash-recovery copy.
 	export let on_uploaded: (() => void) | null = null;
