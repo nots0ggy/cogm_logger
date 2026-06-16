@@ -129,19 +129,24 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
 
             payload = payload[match_location:]
 
-            # Capture up to the full 363-byte kill packet (726 hex) so the tail
-            # floats (bytes 350-358 = hex 700-716 = the kill's world X/Y/Z) ride
-            # along when they're in the buffer. The gate and advance stay at the
-            # proven-safe 600: names live in the first 600, the identifier re-scan
-            # self-corrects, and raising them to 726 would drop any kill packet
-            # shorter than that. If only 600-725 hex is buffered, the coords are
-            # simply truncated for that one kill (optional data, never required).
+            # Emit the full 363-byte kill packet (726 hex) so the tail floats
+            # (bytes 350-358 = hex 700-716 = the kill's world X/Y/Z) ride along
+            # for the kill-location map when they're in the buffer.
+            #
+            # Name detection must stay on exactly the first 600 hex. The five
+            # names live there, and scanning into the 600-726 tail lets a string
+            # in that region (or the coordinate bytes) register as a spurious
+            # sixth name, which makes len(names) != 5 and silently drops every
+            # such kill (the "0 logs" regression). name_window keeps detection
+            # byte-identical to the proven pre-coords behaviour; possible_log
+            # only widens what we ship downstream.
             if len(payload) >= 600:
                 possible_log = payload[0:726]
+                name_window = payload[0:600]
                 i = 0
                 names = []
                 while i < 600:
-                    name = extract_string(possible_log, i, 64)
+                    name = extract_string(name_window, i, 64)
                     if name == -1:
                         i += 1
                         continue
