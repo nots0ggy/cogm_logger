@@ -487,13 +487,15 @@
 
 	// ── Kill-location coords for the CoGM heatmap ──────────────────────────
 	// BDO writes each kill's world position into the packet tail: little-endian
-	// float32 at byte 350 (X, east/west) and byte 358 (Z, north/south). Byte 354
-	// is height (Y), which the heatmap doesn't use. Captures from before 1.15.0
-	// truncated the packet ahead of these bytes, so parse defensively: a kill
-	// whose hex is too short, whose floats are non-finite, or whose values fall
-	// outside the BDO world is simply skipped. The upload still carries every
-	// kill — only the heatmap gets sparser. CoGM never requires these.
+	// float32 at byte 350 (X, east/west), byte 354 (Y, height), byte 358 (Z,
+	// north/south). Captures from before 1.15.0 truncated the packet ahead of
+	// these bytes, so parse defensively: a kill whose hex is too short, whose
+	// X/Z floats are non-finite, or whose values fall outside the BDO world is
+	// simply skipped. Height is best-effort on top of that — a missing/odd Y
+	// never drops the kill, it just leaves elevation null. CoGM never requires
+	// any of these; the map degrades gracefully.
 	const COORD_X_HEX = 700; // byte 350 * 2
+	const COORD_Y_HEX = 708; // byte 354 * 2 — elevation (wall/fort vs ground)
 	const COORD_Z_HEX = 716; // byte 358 * 2
 	// The map transform is px = 17299 + X/100 over a 32768px map, so real coords
 	// sit within roughly ±1.8M. Anything past this is a misparse (wrong offset /
@@ -513,13 +515,17 @@
 		return Number.isFinite(value) ? value : null;
 	}
 
-	function parse_kill_coord(hex: string): { x: number; z: number } | null {
+	function parse_kill_coord(hex: string): { x: number; z: number; y: number | null } | null {
 		if (!hex || hex.length < COORD_Z_HEX + 8) return null;
 		const x = read_le_float32(hex, COORD_X_HEX);
 		const z = read_le_float32(hex, COORD_Z_HEX);
 		if (x === null || z === null) return null;
 		if (Math.abs(x) > COORD_WORLD_LIMIT || Math.abs(z) > COORD_WORLD_LIMIT) return null;
-		return { x, z };
+		// Elevation is best-effort: a missing or out-of-range Y leaves the kill in
+		// place with null height rather than dropping it from the heatmap.
+		let y = read_le_float32(hex, COORD_Y_HEX);
+		if (y !== null && Math.abs(y) > COORD_WORLD_LIMIT) y = null;
+		return { x, z, y };
 	}
 
 	// Per-kill coords keyed by (time, killer-family, victim-family) so CoGM binds
@@ -529,7 +535,7 @@
 	// kill carried a parseable coord (older capture / non-node-war format), in
 	// which case the modal sends no coords at all.
 	function get_coords() {
-		const out: { t: string; k: string; v: string; x: number; z: number }[] = [];
+		const out: { t: string; k: string; v: string; x: number; z: number; y: number | null }[] = [];
 		for (const log of logs) {
 			// Per-kill guard: coords are an optional overlay, so a single malformed
 			// packet must skip only its own coord, never throw out of get_coords and
@@ -548,7 +554,8 @@
 					k: is_kill ? player_one_name : player_two_name,
 					v: is_kill ? player_two_name : player_one_name,
 					x: coord.x,
-					z: coord.z
+					z: coord.z,
+					y: coord.y
 				});
 			} catch {
 				continue;
