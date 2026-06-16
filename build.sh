@@ -5,6 +5,13 @@ log() {
     echo "[INFO] $1"
 }
 
+# Loud, to stderr: for non-fatal problems that still need to be seen in a long
+# build log (a swallowed setcap failure leaves a binary that can't sniff without
+# root, so it must not hide behind an [INFO] line).
+warn() {
+    echo "[WARNING] $1" >&2
+}
+
 error_exit() {
     echo "[ERROR] $1"
     exit 1
@@ -62,10 +69,26 @@ if [ -n "$INTERP" ] && [ ! -e "$INTERP" ]; then
     fi
 fi
 
-# allow scapy to read network
+# Allow scapy to sniff without root. neu build names the app binary per arch
+# (cogm-logger-linux_x64 on amd64, cogm-logger-linux_arm64 on ARM), so glob it
+# instead of hardcoding _x64, and don't let a missing/odd-named binary abort
+# the whole build under `set -e`. The capability only lets the logger capture
+# without sudo; if it's skipped the user can still launch the app with sudo.
 log "Setting capabilities for the logger binary..."
-sudo setcap cap_net_raw=eip ./dist/cogm-logger/cogm-logger-linux_x64
-sudo setcap cap_net_raw=eip ./dist/cogm-logger/logger/logger
+# Cap EVERY arch binary present, not just the first: dist/ isn't cleaned between
+# builds, so a stale x64 binary can sit next to a fresh arm64 one, and capping
+# only one would silently ship the other without cap_net_raw. The glob stays
+# literal when nothing matches, so the [ -f ] guard handles the none case.
+capped_app=0
+for app_bin in ./dist/cogm-logger/cogm-logger-linux_*; do
+    [ -f "$app_bin" ] || continue
+    capped_app=1
+    sudo setcap cap_net_raw=eip "$app_bin" || warn "setcap failed on $app_bin (run the app with sudo, or re-run setcap manually)."
+done
+if [ "$capped_app" -eq 0 ]; then
+    warn "no cogm-logger-linux_* binary found in dist/cogm-logger. Check your architecture and that 'neu build' produced it. Skipping setcap on the app binary."
+fi
+sudo setcap cap_net_raw=eip ./dist/cogm-logger/logger/logger || warn "setcap failed on the bundled python logger binary (capture needs cap_net_raw; run with sudo or re-run setcap manually)."
 
 log "Build completed. Compiled files are in dist/cogm-logger/"
 log "All tasks completed successfully."
