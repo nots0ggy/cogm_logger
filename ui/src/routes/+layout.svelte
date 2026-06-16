@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { init, events, os, app } from '@neutralinojs/lib';
+	import { init, events, app } from '@neutralinojs/lib';
 	import { onMount } from 'svelte';
+	import { kill_logger_process } from '../logic/logger-wrapper';
 	import '../app.css';
 	import Modal from '../svelte-ui/modal/modal.svelte';
 	import { Toaster } from 'svelte-french-toast';
@@ -16,7 +17,9 @@
 			is_ready = true;
 		});
 		events.on('windowClose', async () => {
-			await os.execCommand('taskkill /F /IM logger.exe ');
+			// Kill the sniffer before exiting. Was an unguarded Windows taskkill
+			// that no-op'd on Linux, leaving the capture process orphaned on close.
+			await kill_logger_process();
 			await app.exit();
 		});
 	});

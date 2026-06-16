@@ -54,10 +54,31 @@ let callback: LoggerCallback | null = null;
 
 // Set by stop_logger, cleared at the start of start_logger. A reconnect
 // dispatches start_logger without awaiting it, and start_logger then awaits
-// ~1s on its taskkill before spawning; if stop_logger ran during that window
+// ~1s on its kill before spawning; if stop_logger ran during that window
 // we must abort the spawn so a torn-down page doesn't leak a background
 // capture.
 let stopped = false;
+
+/**
+ * Force-kill any lingering sniffer process. os.updateSpawnedProcess(id, 'exit')
+ * is the primary, cross-platform stop; this is the belt-and-suspenders for a
+ * child that detached from the parent handle. Windows kills by exe name with
+ * taskkill; Linux uses pkill on the sniffer's path (`logger/logger`) so a
+ * leftover scapy capture can't keep holding the network interface. Bounded by a
+ * 1s race so a missing command or no-match never stalls the caller. Previously
+ * the taskkill ran unconditionally and silently no-op'd on Linux, which is why
+ * captures lingered there.
+ */
+export async function kill_logger_process(): Promise<void> {
+	const cmd =
+		NL_OS === 'Windows' ? 'taskkill /F /IM logger.exe' : 'pkill -f logger/logger';
+	try {
+		const timeout = new Promise((resolve) => setTimeout(() => resolve('timeout'), 1000));
+		await Promise.race([os.execCommand(cmd), timeout]);
+	} catch (e) {
+		console.error(e);
+	}
+}
 
 export async function start_logger(
 	clb: LoggerCallback,
@@ -73,16 +94,7 @@ export async function start_logger(
 		}
 	}
 	console.log('Killing previous instances');
-	try {
-		const kill_timouet = new Promise((resolve, reject) => {
-			setTimeout(() => resolve('Kill timeout'), 1000);
-		});
-		const kill_promise = os.execCommand('taskkill /F /IM logger.exe ');
-
-		await Promise.race([kill_promise, kill_timouet]);
-	} catch (e) {
-		console.error(e);
-	}
+	await kill_logger_process();
 
 	const extra_args = data ? ' ' + data : '';
 
@@ -141,17 +153,10 @@ export async function stop_logger() {
 			console.error(e);
 		}
 	}
-	// Belt-and-suspenders on Windows: the spawned-process exit can miss a
-	// child that detached from the parent handle. No-op (and harmless error)
-	// on other platforms.
-	if (NL_OS === 'Windows') {
-		try {
-			const kill_timeout = new Promise((resolve) => setTimeout(() => resolve('timeout'), 1000));
-			await Promise.race([os.execCommand('taskkill /F /IM logger.exe'), kill_timeout]);
-		} catch (e) {
-			console.error(e);
-		}
-	}
+	// Belt-and-suspenders: os.updateSpawnedProcess can miss a child that
+	// detached from the parent handle. Cross-platform now (taskkill on Windows,
+	// pkill on Linux) so a leftover capture is actually killed on either OS.
+	await kill_logger_process();
 }
 
 /**
