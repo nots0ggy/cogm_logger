@@ -54,8 +54,20 @@ neu() {
     ./ui/node_modules/.bin/neu "$@"
 }
 
-neu update || error_exit "Neutralino.js update failed."
-neu build || error_exit "Neutralino.js build failed."
+# --latest pulls the current Neutralino binaries. The version pinned in
+# neutralino.config.json is too old to emit a Linux app binary at all, so a
+# plain `neu update` left `neu build` with nothing to package on Linux. (This
+# is build.sh / from-source only; the Windows CI keeps its own pinned neu.)
+neu update --latest || error_exit "Neutralino.js update failed."
+# The Linux runtime that --latest fetches lands in .tmp/ but `neu build` expects
+# it under bin/, so stage it there or the build produces no app binary.
+mkdir -p bin
+if [ ! -f bin/neutralino-linux_x64 ] && [ -f .tmp/neutralino-linux_x64 ]; then
+    log "Installing Neutralino runtime into bin/"
+    cp .tmp/neutralino-linux_x64 bin/
+    chmod +x bin/neutralino-linux_x64
+fi
+neu build --release || error_exit "Neutralino.js build failed."
 
 # Patch ELF interpreter if the system uses a non-/lib64 path (e.g. Ubuntu/Debian/Pop!_OS)
 INTERP=$(patchelf --print-interpreter ./dist/cogm-logger/logger/logger 2>/dev/null)
