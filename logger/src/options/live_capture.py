@@ -57,8 +57,67 @@ _log_file = None
 _pcap_writer = None
 _pcap_count = 0
 
+# Diagnostic sidecar for "0 logs" reports. package_handler tallies how many names
+# each candidate kill-packet yielded and samples the off-by-one near-misses (4 or
+# 6+ names). A healthy war has ZERO of those: every candidate is a clean 5-name
+# kill or an obvious non-kill (0-3 names). So any near-miss here is the smoking
+# gun for a silent kill drop (the kind that caused the 1.16 "0 logs" regression,
+# where the widened window made every kill parse to 6 names). start_sniff opens
+# the file and resets the counters; best-effort, a diag error never touches
+# capture. None when not live-capturing.
+_diag_file = None
+_diag_counts = {}       # names_count -> candidates that yielded it
+_diag_samples = 0       # near-miss sample lines written (capped)
+_diag_candidates = 0    # total candidates seen this session
+_DIAG_SAMPLE_CAP = 300
+_DIAG_SUMMARY_EVERY = 500
+
 identifier_regex = r"[56][0-9a-f]0100[0-9a-f]{4}"
 name_regex = r"^[A-Z][a-zA-Z0-9_]{2,15}$"
+
+
+def _diag_write_summary():
+    # One-line snapshot of what the parser is seeing. Written periodically (so a
+    # mid-war crash still leaves a trail) and once at session end. The names_dist
+    # is the at-a-glance diagnosis: a healthy war reads kills(5-name)>0 with the
+    # rest at 0-3 names; a regression shows up as a spike at 4 or 6+.
+    if _diag_file is None:
+        return
+    try:
+        dist = ", ".join(f"{n}:{_diag_counts[n]}" for n in sorted(_diag_counts))
+        kills = _diag_counts.get(5, 0)
+        stamp = strftime("%I:%M:%S", localtime())
+        _diag_file.write(
+            f"SUMMARY {stamp} candidates={_diag_candidates} kills(5-name)={kills} "
+            f"names_dist={{{dist}}}\n"
+        )
+        _diag_file.flush()
+    except Exception:
+        pass
+
+
+def _diag_record(names_count, names, hexstr, package):
+    # Tally one candidate and, for the off-by-one near-misses (4 or 6+ names),
+    # write a sample with its names+offsets and full hex so the failure can be
+    # diagnosed offline. Best-effort: a diag error must never break capture.
+    global _diag_candidates, _diag_samples
+    if _diag_file is None:
+        return
+    try:
+        _diag_counts[names_count] = _diag_counts.get(names_count, 0) + 1
+        _diag_candidates += 1
+        if (names_count == 4 or names_count >= 6) and _diag_samples < _DIAG_SAMPLE_CAP:
+            _diag_samples += 1
+            stamp = strftime("%I:%M:%S", localtime(int(package.time)))
+            _diag_file.write(
+                f"NEAR-MISS {stamp} names={names_count} "
+                f"[{' | '.join(names)}] hex={hexstr}\n"
+            )
+            _diag_file.flush()
+        if _diag_candidates % _DIAG_SUMMARY_EVERY == 0:
+            _diag_write_summary()
+    except Exception:
+        pass
 
 
 def package_handler(package, output, ip_filter=True, record_pcap_path=None):
@@ -156,6 +215,10 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
                         i += 64
                     else:
                         i += 1
+                # Diagnostic tally: record what this candidate parsed to so a
+                # "0 logs" session leaves evidence of how the kills degraded
+                # (best-effort, no-op when the diag file isn't open).
+                _diag_record(len(names), names, possible_log, package)
                 if len(names) == 5:
                     time = strftime("%I:%M:%S", localtime(int(package.time)))
                     line = (
@@ -235,6 +298,7 @@ def read_network_interfaces():
 
 def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=None):
     global _log_file, _pcap_writer, _pcap_count
+    global _diag_file, _diag_counts, _diag_samples, _diag_candidates
     try:
         print("Reading Network...", flush=True)
         if record_pcap_path is not None:
@@ -266,6 +330,24 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
         except Exception as file_err:
             _log_file = None
             print(f"Recovery file unavailable: {file_err}", flush=True)
+        # Diagnostic sidecar next to the recovery log (session-<ts>.diag.log).
+        # Best-effort and independent of the recovery file: it's the trail that
+        # turns a silent "0 logs" report into evidence. Reset the per-session
+        # counters here so a re-armed capture starts clean.
+        _diag_counts = {}
+        _diag_samples = 0
+        _diag_candidates = 0
+        try:
+            diag_path = (output[:-4] if output.lower().endswith(".log") else output) + ".diag.log"
+            diag_dir = os.path.dirname(diag_path)
+            if diag_dir:
+                os.makedirs(diag_dir, exist_ok=True)
+            _diag_file = open(diag_path, "a", encoding="utf-8", errors="replace")
+            _diag_file.write(f"=== capture session started {strftime('%Y-%m-%d %I:%M:%S')} ===\n")
+            _diag_file.flush()
+        except Exception as diag_err:
+            _diag_file = None
+            print(f"Diagnostic log unavailable: {diag_err}", flush=True)
         guidToNameDict = read_network_interfaces()
         intfList = get_if_list()
         namesAllowedList = [guidToNameDict.get(e) for e in intfList]
@@ -298,3 +380,12 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
             except Exception:
                 pass
             _pcap_writer = None
+        if _diag_file is not None:
+            try:
+                _diag_write_summary()
+                _diag_file.write("=== capture session ended ===\n")
+                _diag_file.flush()
+                _diag_file.close()
+            except Exception:
+                pass
+            _diag_file = None
