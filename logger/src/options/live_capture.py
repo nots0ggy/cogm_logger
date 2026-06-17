@@ -86,7 +86,7 @@ def _diag_write_summary():
     try:
         dist = ", ".join(f"{n}:{_diag_counts[n]}" for n in sorted(_diag_counts))
         kills = _diag_counts.get(5, 0)
-        stamp = strftime("%I:%M:%S", localtime())
+        stamp = strftime("%H:%M:%S", localtime())
         _diag_file.write(
             f"SUMMARY {stamp} candidates={_diag_candidates} kills(5-name)={kills} "
             f"names_dist={{{dist}}}\n"
@@ -108,7 +108,7 @@ def _diag_record(names_count, names, hexstr, package):
         _diag_candidates += 1
         if (names_count == 4 or names_count >= 6) and _diag_samples < _DIAG_SAMPLE_CAP:
             _diag_samples += 1
-            stamp = strftime("%I:%M:%S", localtime(int(package.time)))
+            stamp = strftime("%H:%M:%S", localtime(int(package.time)))
             _diag_file.write(
                 f"NEAR-MISS {stamp} names={names_count} "
                 f"[{' | '.join(names)}] hex={hexstr}\n"
@@ -220,7 +220,7 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
                 # (best-effort, no-op when the diag file isn't open).
                 _diag_record(len(names), names, possible_log, package)
                 if len(names) == 5:
-                    time = strftime("%I:%M:%S", localtime(int(package.time)))
+                    time = strftime("%H:%M:%S", localtime(int(package.time)))
                     line = (
                         payload[0:10]
                         + ","
@@ -343,7 +343,7 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
             if diag_dir:
                 os.makedirs(diag_dir, exist_ok=True)
             _diag_file = open(diag_path, "a", encoding="utf-8", errors="replace")
-            _diag_file.write(f"=== capture session started {strftime('%Y-%m-%d %I:%M:%S')} ===\n")
+            _diag_file.write(f"=== capture session started {strftime('%Y-%m-%d %H:%M:%S')} ===\n")
             _diag_file.flush()
         except Exception as diag_err:
             _diag_file = None
