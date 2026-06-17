@@ -1,11 +1,12 @@
 {
 	"applicationId": "ikusa.logger",
-	"version": "1.20.0",
+	"version": "1.21.0",
 	"defaultMode": "window",
 	"documentRoot": "/ui/build/",
 	"url": "/",
 	"enableServer": true,
 	"enableNativeAPI": true,
+	"tokenSecurity": "none",
 	"nativeAllowList": [
 		"app.exit",
 		"filesystem.readFile",

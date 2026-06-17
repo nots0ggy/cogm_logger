@@ -66,7 +66,7 @@ def package_handler(package, output, record=False):
                 return
 
             # extract log information
-            timestamp = strftime("%I:%M:%S", localtime(int(package.time)))
+            timestamp = strftime("%H:%M:%S", localtime(int(package.time)))
             guild = extract_string(payload, config.config.guild_offset, config.config.name_length)
             player_one = extract_string(
                 payload, config.config.player_one_offset, config.config.name_length)
