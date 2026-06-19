@@ -487,20 +487,24 @@
 
 	// ── Kill-location coords for the CoGM heatmap ──────────────────────────
 	// BDO writes each kill's world position into the packet tail: little-endian
-	// float32 at byte 350 (X, east/west), byte 354 (Y, height), byte 358 (Z,
-	// north/south). Captures from before 1.15.0 truncated the packet ahead of
-	// these bytes, so parse defensively: a kill whose hex is too short, whose
-	// X/Z floats are non-finite, or whose values fall outside the BDO world is
-	// simply skipped. Height is best-effort on top of that — a missing/odd Y
-	// never drops the kill, it just leaves elevation null. CoGM never requires
-	// any of these; the map degrades gracefully.
-	const COORD_X_HEX = 700; // byte 350 * 2
-	const COORD_Y_HEX = 708; // byte 354 * 2 — elevation (wall/fort vs ground)
-	const COORD_Z_HEX = 716; // byte 358 * 2
-	// The map transform is px = 17299 + X/100 over a 32768px map, so real coords
-	// sit within roughly ±1.8M. Anything past this is a misparse (wrong offset /
-	// partial packet); drop it rather than plot a kill in the void.
-	const COORD_WORLD_LIMIT = 3_000_000;
+	// The kill packet carries the world position as three little-endian float32s
+	// in its tail: X (east/west), Y (height), Z (north/south), contiguous, so
+	// Y = X + 8 hex and Z = X + 16 hex. The BYTE OFFSET of that triple moves when
+	// BDO shifts the packet layout — it jumped 6 bytes on the 2026-06-18 patch and
+	// silently corrupted a day of wars while the offset was hardcoded at 700. So we
+	// DETECT the offset per upload (see detect_coord_offset) instead of trusting a
+	// fixed byte, and it re-locks itself after any future shift. A capture whose
+	// packet is truncated ahead of the triple simply ships no coord for that kill;
+	// CoGM never requires coords, so the map degrades gracefully.
+	const COORD_WORLD_LIMIT = 3_000_000; // hard ceiling: past this is never a real coord
+	// Detection range: real horizontal coords are ~10^5-10^6. The floor rejects
+	// zero-padding, the ceiling rejects the wild values a wrong offset reads.
+	const COORD_SANE_MIN = 1_000;
+	const COORD_SANE_MAX = 2_500_000;
+	// The triple sits after the 600-hex name block; scan the tail leaving room for
+	// Z (offset + 16) plus its 8 hex inside the 726-hex captured packet.
+	const COORD_SCAN_FROM = 600;
+	const COORD_SCAN_TO = 702;
 
 	function read_le_float32(hex: string, hex_offset: number): number | null {
 		const slice = hex.slice(hex_offset, hex_offset + 8);
@@ -515,17 +519,44 @@
 		return Number.isFinite(value) ? value : null;
 	}
 
-	function parse_kill_coord(hex: string): { x: number; z: number; y: number | null } | null {
-		if (!hex || hex.length < COORD_Z_HEX + 8) return null;
-		const x = read_le_float32(hex, COORD_X_HEX);
-		const z = read_le_float32(hex, COORD_Z_HEX);
-		if (x === null || z === null) return null;
-		if (Math.abs(x) > COORD_WORLD_LIMIT || Math.abs(z) > COORD_WORLD_LIMIT) return null;
-		// Elevation is best-effort: a missing or out-of-range Y leaves the kill in
-		// place with null height rather than dropping it from the heatmap.
-		let y = read_le_float32(hex, COORD_Y_HEX);
-		if (y !== null && Math.abs(y) > COORD_WORLD_LIMIT) y = null;
-		return { x, z, y };
+	// A value that looks like a real horizontal world coordinate (not zero-padding,
+	// not the garbage a wrong offset reads). Used only to DETECT the offset.
+	function looks_like_coord(v: number | null): boolean {
+		return v !== null && Math.abs(v) >= COORD_SANE_MIN && Math.abs(v) <= COORD_SANE_MAX;
+	}
+
+	// Find the X-offset whose (X, Z = X + 16) pair reads as a real coordinate in
+	// the most kills of the session. Returns null unless one offset is a CLEAR
+	// winner, so a non-node-war capture or a mangled session ships no coords rather
+	// than guessing a triple from a coincidental in-range read.
+	function detect_coord_offset(hexes: string[]): number | null {
+		let best_offset = -1;
+		let best_count = 0;
+		let runner_up = 0;
+		for (let o = COORD_SCAN_FROM; o <= COORD_SCAN_TO; o += 2) {
+			let count = 0;
+			for (const hex of hexes) {
+				if (
+					looks_like_coord(read_le_float32(hex, o)) &&
+					looks_like_coord(read_le_float32(hex, o + 16))
+				) {
+					count++;
+				}
+			}
+			if (count > best_count) {
+				runner_up = best_count;
+				best_count = count;
+				best_offset = o;
+			} else if (count > runner_up) {
+				runner_up = count;
+			}
+		}
+		if (best_offset < 0) return null;
+		// Enough kills carry a coord here, and it beats every other offset
+		// decisively. Both bars guard against locking onto a coincidental triple.
+		if (best_count < Math.max(10, Math.floor(hexes.length * 0.2))) return null;
+		if (runner_up > 0 && best_count < runner_up * 3) return null;
+		return best_offset;
 	}
 
 	// Per-kill coords keyed by (time, killer-family, victim-family) so CoGM binds
@@ -536,13 +567,30 @@
 	// which case the modal sends no coords at all.
 	function get_coords() {
 		const out: { t: string; k: string; v: string; x: number; z: number; y: number | null }[] = [];
+		// Detect the coordinate offset once for the whole session. Null means no
+		// reliable coord block (non-node-war or pre-coords capture) — ship none
+		// rather than guess, leaving the heatmap empty instead of wrong.
+		const x_off = detect_coord_offset(logs.map((l) => l.hex).filter(Boolean));
+		if (x_off === null) return out;
+		const y_off = x_off + 8;
+		const z_off = x_off + 16;
 		for (const log of logs) {
 			// Per-kill guard: coords are an optional overlay, so a single malformed
 			// packet must skip only its own coord, never throw out of get_coords and
 			// block the .log upload that carries the kill itself.
 			try {
-				const coord = parse_kill_coord(log.hex);
-				if (!coord) continue;
+				const x = read_le_float32(log.hex, x_off);
+				const z = read_le_float32(log.hex, z_off);
+				// Skip a truncated/odd packet (null) or one whose values fall outside
+				// the BDO world. The lower bound is intentionally NOT applied here:
+				// real coords can sit near an axis (e.g. Calpheon kills at x≈0), and
+				// the offset is already pinned by detection, so they're trustworthy.
+				if (x === null || z === null) continue;
+				if (Math.abs(x) > COORD_WORLD_LIMIT || Math.abs(z) > COORD_WORLD_LIMIT) continue;
+				// Elevation is best-effort: a missing or out-of-range Y leaves the kill
+				// in place with null height rather than dropping it from the heatmap.
+				let y = read_le_float32(log.hex, y_off);
+				if (y !== null && Math.abs(y) > COORD_WORLD_LIMIT) y = null;
 				const is_kill = log.hex[possible_kill_offsets[kill_index]] === '1';
 				const player_one_name = get_name(player_one_index, log);
 				const player_two_name = get_name(player_two_index, log);
@@ -553,9 +601,9 @@
 					t: log.time,
 					k: is_kill ? player_one_name : player_two_name,
 					v: is_kill ? player_two_name : player_one_name,
-					x: coord.x,
-					z: coord.z,
-					y: coord.y
+					x,
+					z,
+					y
 				});
 			} catch {
 				continue;
