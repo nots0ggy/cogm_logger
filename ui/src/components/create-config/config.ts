@@ -174,6 +174,62 @@ export async function get_name_order_sample(): Promise<NameOrderSample | null> {
 	}
 }
 
+// The alliance roster pulled from CoGM (GET /api/logger/roster) after the
+// token verifies. It anchors name-order auto-detection: own family names pin
+// the Killer (my-side) column, enemy family names pin the Victim column, and
+// the in-game guild names pin the Guild column. `configured` is false when the
+// user hasn't set up an Own Alliance on CoGM, in which case auto-detect falls
+// back to its offline heuristic. Stored verbatim from the endpoint; matching
+// normalizes (lowercase, strip spaces) at compare time.
+export type CogmRoster = {
+	configured: boolean;
+	guildName: string; // CoGM website guild name, for display only
+	guilds: string[]; // own alliance in-game guild names
+	enemyGuilds: string[]; // enemy alliances' in-game guild names
+	ownFamilyNames: string[];
+	enemyFamilyNames: string[];
+	fetchedAt: string; // ISO timestamp of the fetch
+};
+const COGM_ROSTER_KEY = 'cogm_roster';
+
+export async function save_cogm_roster(roster: CogmRoster): Promise<void> {
+	try {
+		await storage.setData(COGM_ROSTER_KEY, JSON.stringify(roster));
+	} catch {
+		/* best-effort; a missing roster only means auto-detect uses the fallback */
+	}
+}
+
+export async function get_cogm_roster(): Promise<CogmRoster | null> {
+	try {
+		const raw = await storage.getData(COGM_ROSTER_KEY);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw);
+		if (!parsed || typeof parsed !== 'object') return null;
+		// Tolerate older/partial blobs: coerce every field to a safe default so a
+		// stale shape can never crash the detection that reads it.
+		return {
+			configured: parsed.configured === true,
+			guildName: typeof parsed.guildName === 'string' ? parsed.guildName : '',
+			guilds: Array.isArray(parsed.guilds) ? parsed.guilds : [],
+			enemyGuilds: Array.isArray(parsed.enemyGuilds) ? parsed.enemyGuilds : [],
+			ownFamilyNames: Array.isArray(parsed.ownFamilyNames) ? parsed.ownFamilyNames : [],
+			enemyFamilyNames: Array.isArray(parsed.enemyFamilyNames) ? parsed.enemyFamilyNames : [],
+			fetchedAt: typeof parsed.fetchedAt === 'string' ? parsed.fetchedAt : ''
+		};
+	} catch {
+		return null;
+	}
+}
+
+export async function clear_cogm_roster(): Promise<void> {
+	try {
+		await storage.setData(COGM_ROSTER_KEY, '');
+	} catch {
+		/* best-effort */
+	}
+}
+
 export function calculate_kd(kills: number, deaths: number): string {
 	if (deaths === 0) {
 		return kills > 0 ? kills.toFixed(2) : '0.00';

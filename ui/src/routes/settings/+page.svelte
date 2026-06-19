@@ -6,8 +6,12 @@
 		get_config,
 		type Config,
 		type NameOrderSample,
+		type CogmRoster,
 		update_config,
 		get_name_order_sample,
+		get_cogm_roster,
+		save_cogm_roster,
+		clear_cogm_roster,
 		PERSONAL_FAMILY_NAME_KEY
 	} from '../../components/create-config/config';
 	import Button from '../../svelte-ui/elements/button.svelte';
@@ -26,6 +30,14 @@
 	let cogm_token = '';
 	let cogm_url = 'https://cogm.app';
 	let cogm_guild = '';
+
+	// Roster state for name-order auto-detection. Pulled from CoGM after the
+	// token verifies; drives the hint under the token field and is read by the
+	// record screen's detection. 'unconfigured' means no Own Alliance is set up
+	// on CoGM (auto-detect falls back to the offline heuristic).
+	type RosterStatus = 'none' | 'loading' | 'configured' | 'empty' | 'unconfigured' | 'error';
+	let roster_status: RosterStatus = 'none';
+	let roster_summary = '';
 
 	// Name order: the captured columns from the last war (for the dropdowns) and
 	// the saved Killer/Victim/Guild assignment (config.name_order).
@@ -112,8 +124,75 @@
 		if (!initial_load_done) return;
 		if (cogm_token !== verified_token || cogm_url !== verified_url) {
 			cogm_guild = '';
+			// The stored roster belongs to the previously verified token. Drop it
+			// (and its hint) so the record screen never auto-detects against a
+			// different guild's roster; re-verifying repopulates it.
+			roster_status = 'none';
+			roster_summary = '';
+			clear_cogm_roster();
 		}
 		save_cogm_settings();
+	}
+
+	// Reflect a roster blob in the hint under the token field.
+	function apply_roster_summary(roster: CogmRoster | null) {
+		if (!roster) {
+			roster_status = 'none';
+			roster_summary = '';
+			return;
+		}
+		if (!roster.configured) {
+			roster_status = 'unconfigured';
+			roster_summary = '';
+			return;
+		}
+		const fam = roster.ownFamilyNames.length;
+		const g = roster.guilds.length;
+		if (fam === 0) {
+			roster_status = 'empty';
+			roster_summary = '';
+			return;
+		}
+		roster_status = 'configured';
+		roster_summary = `${fam} family ${fam === 1 ? 'name' : 'names'} across ${g} ${
+			g === 1 ? 'guild' : 'guilds'
+		}`;
+	}
+
+	// Pull the alliance roster CoGM uses to auto-detect the name order. Runs
+	// after a successful token verify; non-fatal (a failure leaves auto-detect
+	// on its offline fallback, the verify itself still succeeded).
+	async function fetch_roster() {
+		const base = (cogm_url || 'https://cogm.app').replace(/\/$/, '');
+		roster_status = 'loading';
+		// Drop the prior roster before the refresh so any failure path leaves
+		// storage empty (record screen falls back to manual) instead of keeping
+		// a stale roster the Settings hint says it could not load.
+		await clear_cogm_roster();
+		try {
+			const res = await fetch(`${base}/api/logger/roster`, {
+				headers: { Authorization: `Bearer ${cogm_token}` }
+			});
+			if (!res.ok) {
+				roster_status = 'error';
+				return;
+			}
+			const data = await res.json();
+			const a = data.alliance || {};
+			const roster: CogmRoster = {
+				configured: a.configured === true,
+				guildName: data.guild?.name || '',
+				guilds: Array.isArray(a.guilds) ? a.guilds : [],
+				enemyGuilds: Array.isArray(a.enemyGuilds) ? a.enemyGuilds : [],
+				ownFamilyNames: Array.isArray(a.ownFamilyNames) ? a.ownFamilyNames : [],
+				enemyFamilyNames: Array.isArray(a.enemyFamilyNames) ? a.enemyFamilyNames : [],
+				fetchedAt: new Date().toISOString()
+			};
+			await save_cogm_roster(roster);
+			apply_roster_summary(roster);
+		} catch {
+			roster_status = 'error';
+		}
 	}
 
 	async function verify_token() {
@@ -131,8 +210,12 @@
 				verified_url = cogm_url;
 				config = await update_config({ ...config, cogm_token, cogm_url, cogm_guild });
 				show_toast(`Token valid. Uploads go to ${cogm_guild}.`, 'success');
+				await fetch_roster();
 			} else {
 				cogm_guild = '';
+				roster_status = 'none';
+				roster_summary = '';
+				await clear_cogm_roster();
 				let msg = 'Invalid or revoked token';
 				try {
 					const data = await res.json();
@@ -175,6 +258,8 @@
 		cogm_url = config.cogm_url || 'https://cogm.app';
 		cogm_guild = config.cogm_guild || '';
 		name_order_sample = await get_name_order_sample();
+		// Show the status of the roster last fetched for this token (if any).
+		apply_roster_summary(await get_cogm_roster());
 		// Trust the stored guild label for the stored token/url it was saved
 		// against; editing either afterwards clears it via on_cogm_input_change.
 		verified_token = cogm_token;
@@ -339,6 +424,25 @@
 				</div>
 				{#if cogm_guild && cogm_token === verified_token && cogm_url === verified_url}
 					<p class="text-caption mt-1">Linked guild: {cogm_guild}</p>
+				{/if}
+				{#if roster_status === 'loading'}
+					<p class="text-caption mt-1">Loading alliance roster...</p>
+				{:else if roster_status === 'configured'}
+					<p class="text-caption mt-1 text-status-ok">Auto-detect ready: {roster_summary}.</p>
+				{:else if roster_status === 'empty'}
+					<p class="text-caption mt-1 text-gold">
+						Alliance found, roster still syncing. Auto-detect uses your family name until it fills
+						in.
+					</p>
+				{:else if roster_status === 'unconfigured'}
+					<p class="text-caption mt-1 text-gold">
+						Set up your Own Alliance on CoGM for accurate auto-detect. Manual name order still
+						works.
+					</p>
+				{:else if roster_status === 'error'}
+					<p class="text-caption mt-1 text-foreground-secondary">
+						Could not load the roster. Auto-detect will use the offline fallback.
+					</p>
 				{/if}
 			</div>
 		</div>

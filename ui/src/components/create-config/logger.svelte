@@ -12,9 +12,11 @@
 		update_config,
 		type Config,
 		type LogType,
+		type CogmRoster,
 		get_date,
 		get_formatted_date,
 		get_config,
+		get_cogm_roster,
 		hexToString,
 		calculate_kd,
 		save_name_order_sample,
@@ -86,6 +88,18 @@
 	// name-order panel without a live war.
 	let sample_saved = false;
 
+	// The alliance roster pulled from CoGM (Settings -> Verify). Anchors
+	// auto-detection: own family names pin the Killer column, enemy family
+	// names pin the Victim column, in-game guild names pin the Guild column.
+	let cogm_roster: CogmRoster | null = null;
+	// Outcome of the last auto-detect, for the confidence badge.
+	// 'roster' = matched your CoGM roster, 'guess' = offline heuristic,
+	// 'nomatch' = roster loaded but nothing matched (left for manual).
+	let detect_source: 'roster' | 'guess' | 'nomatch' | 'manual' | '' = '';
+	// Auto-detect runs once per session when the first kills arrive; manual
+	// dropdown changes after that stick.
+	let auto_detected = false;
+
 	onMount(async () => {
 		config = await get_config();
 		// Restore the saved name order (which captured column is Killer / Victim /
@@ -122,6 +136,8 @@
 		auto_scroll = config.auto_scroll;
 		live_output_path = config.live_output_path || '';
 		personal_family_name = await storage.getData(personal_stats_storage_key).catch(() => '');
+		// Roster fetched in Settings on Verify; drives roster-anchored auto-detect.
+		cogm_roster = await get_cogm_roster();
 	});
 
 	$: persist_auto_scroll(auto_scroll, config);
@@ -153,6 +169,23 @@
 		save_name_order_sample({
 			names: logs[0].names.map((n) => ({ name: n.name, offset: n.offset }))
 		});
+	}
+
+	// Auto-detect once per session when enough kills have arrived to give a
+	// signal AND a CoGM roster is loaded. Roster-anchored detection is content
+	// based, so running it each session re-derives the order and self-heals a
+	// BDO column shift. Without a roster we leave the saved order alone (the
+	// user can hit Auto-detect for an offline guess). Manual changes after this
+	// stick — auto_detected stays true so it never clobbers them.
+	$: if (
+		!auto_detected &&
+		config &&
+		logs.length >= 5 &&
+		possible_name_offsets.length >= 3 &&
+		cogm_roster?.configured
+	) {
+		auto_detected = true;
+		auto_detect();
 	}
 
 	function logs_changed() {
@@ -387,14 +420,34 @@
 			}
 			guild_index = new_value;
 		}
+		detect_source = 'manual';
+		// Lock out the one-shot auto-run so a manual choice made before the 5th
+		// kill is never overwritten when the reactive fires.
+		auto_detected = true;
 		update_config_wrapper();
 	}
 
-	// Best-effort suggestion for the name order: the guild column repeats the
-	// most (many players share a guild), and the player's own family name
-	// should land in the subject (Killer/player_one) column. Only sets the
-	// indices, which stay fully editable; wrapped so it can never crash.
-	function auto_detect() {
+	// Normalize a captured name for matching against the roster: lowercase and
+	// strip spaces and BDO's null padding so "Shere " and "shere" compare equal.
+	function norm_name(s: string): string {
+		return (s || '').toLowerCase().replaceAll('\0', '').replaceAll(' ', '');
+	}
+
+	// Auto-detect which captured column is the Killer, Victim, and Guild.
+	//
+	// Primary signal is the CoGM roster (Settings -> Verify): the column whose
+	// values hit your OWN alliance family names is your side (Killer); the one
+	// hitting ENEMY alliance families is the enemy (Victim); the one hitting the
+	// in-game guild names is the Guild column. This is content-based, so it
+	// self-heals if a BDO patch reorders the packet columns, and it fixes the
+	// "a different alliance got assigned as my guild" bug because your side is
+	// whatever the roster recognizes, not a guess.
+	//
+	// Without a roster (no token / Own Alliance not set up on CoGM) it falls
+	// back to the offline heuristic (guild = most repeated; players = two most
+	// distinct; your family name pins the subject column). The result only sets
+	// the indices, which stay fully editable. Wrapped so it can never crash.
+	function auto_detect(manual = false) {
 		try {
 			const numCols = possible_name_offsets.length;
 			if (numCols < 3 || logs.length === 0) return;
@@ -408,45 +461,112 @@
 				if (nonEmpty.length === 0) return 1;
 				return new Set(nonEmpty).size / nonEmpty.length;
 			};
-			// Guild: lowest distinct ratio (most repeated values).
-			let g = 0;
-			for (let i = 1; i < numCols; i++) {
-				if (distinctRatio(cols[i]) < distinctRatio(cols[g])) g = i;
-			}
-			// Players: the two remaining columns with the most distinct names.
-			const remaining: number[] = [];
-			for (let i = 0; i < numCols; i++) if (i !== g) remaining.push(i);
-			remaining.sort(
-				(a, b) =>
-					new Set(cols[b].filter(Boolean)).size - new Set(cols[a].filter(Boolean)).size
-			);
-			let p1 = remaining[0];
-			let p2 = remaining[1];
+			const distinctCount = (vals: string[]) => new Set(vals.filter(Boolean)).size;
+			// Fraction of a column's non-empty values that are in `set`.
+			const hitRate = (vals: string[], set: Set<string>) => {
+				const nonEmpty = vals.filter(Boolean);
+				if (nonEmpty.length === 0 || set.size === 0) return 0;
+				let hits = 0;
+				for (const v of nonEmpty) if (set.has(norm_name(v))) hits++;
+				return hits / nonEmpty.length;
+			};
 
-			// Family name should sit in the subject column; if it shows up more
-			// in the other, the order is likely reversed, so swap.
-			if (personal_family_name) {
-				const fn = personal_family_name.toLowerCase();
-				let p1Hits = 0;
-				let p2Hits = 0;
-				for (const log of logs) {
-					if (get_name(p1, log).toLowerCase() === fn) p1Hits++;
-					if (get_name(p2, log).toLowerCase() === fn) p2Hits++;
+			const own = new Set((cogm_roster?.ownFamilyNames ?? []).map(norm_name));
+			const enemy = new Set((cogm_roster?.enemyFamilyNames ?? []).map(norm_name));
+			const guildNames = new Set(
+				[...(cogm_roster?.guilds ?? []), ...(cogm_roster?.enemyGuilds ?? [])].map(norm_name)
+			);
+			const haveRoster = !!cogm_roster?.configured && own.size > 0;
+
+			let p1: number;
+			let p2: number;
+			let g: number;
+
+			if (haveRoster) {
+				const ownHits = cols.map((c) => hitRate(c, own));
+				const guildHits = cols.map((c) => hitRate(c, guildNames));
+				const enemyHits = cols.map((c) => hitRate(c, enemy));
+
+				// Killer = the column your own roster recognizes most.
+				p1 = ownHits.indexOf(Math.max(...ownHits));
+
+				// Fail loud: the roster matched nothing. Don't silently lock a
+				// wrong guess — leave the current order and tell the user.
+				if (ownHits[p1] < 0.1) {
+					detect_source = 'nomatch';
+					if (manual) {
+						show_toast(
+							'Could not match your CoGM roster to the captured names. Set the order manually, or re-check your Own Alliance on CoGM.',
+							'error'
+						);
+					}
+					return;
 				}
-				if (p2Hits > p1Hits) {
-					const t = p1;
-					p1 = p2;
-					p2 = t;
+
+				// Guild = best in-game-guild-name match (excluding Killer); fall
+				// back to the most-repeated column when no name matches (the guild
+				// column shown may be the enemy's, not in your roster).
+				const guildCands = [...Array(numCols).keys()].filter((i) => i !== p1);
+				guildCands.sort((a, b) => guildHits[b] - guildHits[a]);
+				g =
+					guildHits[guildCands[0]] >= 0.1
+						? guildCands[0]
+						: [...guildCands].sort((a, b) => distinctRatio(cols[a]) - distinctRatio(cols[b]))[0];
+
+				// Victim = best enemy-roster match among the rest; fall back to the
+				// most-distinct remaining column when no enemy roster is cached.
+				const rest = [...Array(numCols).keys()].filter((i) => i !== p1 && i !== g);
+				rest.sort((a, b) => enemyHits[b] - enemyHits[a]);
+				p2 =
+					enemyHits[rest[0]] > 0
+						? rest[0]
+						: [...rest].sort((a, b) => distinctCount(cols[b]) - distinctCount(cols[a]))[0];
+
+				detect_source = 'roster';
+			} else {
+				// Offline fallback: guild repeats the most; players are the two most
+				// distinct columns; your family name pins the subject column.
+				g = 0;
+				for (let i = 1; i < numCols; i++) {
+					if (distinctRatio(cols[i]) < distinctRatio(cols[g])) g = i;
 				}
+				const remaining = [...Array(numCols).keys()].filter((i) => i !== g);
+				remaining.sort((a, b) => distinctCount(cols[b]) - distinctCount(cols[a]));
+				p1 = remaining[0];
+				p2 = remaining[1];
+				if (personal_family_name) {
+					const fn = norm_name(personal_family_name);
+					let p1Hits = 0;
+					let p2Hits = 0;
+					for (const log of logs) {
+						if (norm_name(get_name(p1, log)) === fn) p1Hits++;
+						if (norm_name(get_name(p2, log)) === fn) p2Hits++;
+					}
+					if (p2Hits > p1Hits) {
+						const t = p1;
+						p1 = p2;
+						p2 = t;
+					}
+				}
+				detect_source = 'guess';
 			}
 
 			player_one_index = p1;
 			player_two_index = p2;
 			guild_index = g;
 			update_config_wrapper();
-			show_toast('Auto-detected. Check the preview and adjust if needed.', 'success');
+			if (manual) {
+				show_toast(
+					detect_source === 'roster'
+						? 'Matched to your CoGM roster. Check the preview and adjust if needed.'
+						: 'Best guess. Check the preview and adjust if needed.',
+					'success'
+				);
+			}
 		} catch (e) {
 			console.error('auto_detect failed', e);
+			// Don't leave the badge claiming a match the writes never completed.
+			detect_source = '';
 		}
 	}
 
@@ -808,11 +928,30 @@
 				<span class="heading-h2">Name order</span>
 				<button
 					class="flex items-center gap-2 text-xs font-semibold text-gold border border-gold/40 bg-gold/10 rounded-md px-3 py-1.5 hover:bg-gold/20 transition-colors"
-					on:click={auto_detect}
+					on:click={() => auto_detect(true)}
 				>
-					Auto-detect{personal_family_name ? ` from "${personal_family_name}"` : ''}
+					{cogm_roster?.configured
+						? detect_source === 'roster'
+							? 'Re-detect'
+							: 'Auto-detect'
+						: `Auto-detect${personal_family_name ? ` from "${personal_family_name}"` : ''}`}
 				</button>
 			</div>
+			{#if detect_source === 'roster'}
+				<p class="text-caption text-status-ok">Matched to your CoGM roster.</p>
+			{:else if detect_source === 'manual'}
+				<p class="text-caption text-foreground-secondary">Manual order.</p>
+			{:else if detect_source === 'nomatch'}
+				<p class="text-caption text-status-error">
+					Could not match your CoGM roster to these names. Set the order manually, or re-check your
+					Own Alliance on CoGM.
+				</p>
+			{:else if detect_source === 'guess'}
+				<p class="text-caption text-gold">
+					Best guess. Set up your Own Alliance on CoGM (and Verify your token in Settings) for
+					accurate auto-detect.
+				</p>
+			{/if}
 			<p class="text-caption leading-relaxed">
 				The logger captured {logs[0].names.length} names on each kill but not which is the killer, victim,
 				or guild. Set it once, or let Auto-detect guess{personal_family_name
