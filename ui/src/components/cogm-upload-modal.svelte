@@ -7,6 +7,10 @@
 	import { get_config } from './create-config/config';
 
 	export let logs_string: string;
+	// Raw diagnostic session (identifier,time,name+offset x5,hex per kill). Sent
+	// alongside the parsed log so CoGM stores it for re-decoding + re-download.
+	// Empty for flows with no hex (e.g. an opened plain .log).
+	export let raw_session = '';
 	// Optional per-kill world coords for the kill-location heatmap. Only the live
 	// capture path supplies these (it has the raw packet hex); a loaded .log file
 	// has no hex, so it opens the modal without coords and the heatmap stays empty
@@ -123,6 +127,9 @@
 		// Only attach coords when the capture produced some — an empty array would
 		// just be dropped server-side anyway, and omitting it keeps the body lean.
 		if (coords.length > 0) body.coords = coords;
+		// Attach the raw session when this flow has the hex (live capture / recover).
+		// CoGM stores it for re-decoding after a recalibration and for re-download.
+		if (raw_session) body.rawSession = raw_session;
 
 		state = 'uploading';
 		form_error = '';

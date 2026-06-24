@@ -22,6 +22,7 @@
 		save_name_order_sample,
 		PERSONAL_FAMILY_NAME_KEY
 	} from '../../components/create-config/config';
+	import { lookup_packet, dominant_identifier } from './packet-registry';
 	import { filesystem, os, storage } from '@neutralinojs/lib';
 	import { onMount } from 'svelte';
 	import { ModalManager } from '../../svelte-ui/modal/modal-store';
@@ -95,10 +96,13 @@
 	// Outcome of the last auto-detect, for the confidence badge.
 	// 'roster' = matched your CoGM roster, 'guess' = offline heuristic,
 	// 'nomatch' = roster loaded but nothing matched (left for manual).
-	let detect_source: 'roster' | 'guess' | 'nomatch' | 'manual' | '' = '';
+	let detect_source: 'roster' | 'guess' | 'nomatch' | 'manual' | 'registry' | '' = '';
 	// Auto-detect runs once per session when the first kills arrive; manual
 	// dropdown changes after that stick.
 	let auto_detected = false;
+	// The calibrated opcode whose column roles + kill offset we've pinned this
+	// session, so we apply the registry once and never fight a later manual edit.
+	let registry_applied: string | null = null;
 
 	onMount(async () => {
 		config = await get_config();
@@ -138,6 +142,15 @@
 		personal_family_name = await storage.getData(personal_stats_storage_key).catch(() => '');
 		// Roster fetched in Settings on Verify; drives roster-anchored auto-detect.
 		cogm_roster = await get_cogm_roster();
+		// Bulk-loaded (recover/open) sessions populate `logs` before onMount, so the
+		// init-time logs_changed() already ran update_config_wrapper while `config`
+		// was still undefined and bailed at `if (!config) return` — the registry
+		// column pin never applied (only the config-free kill offset did). Now that
+		// config + roster are loaded, re-run the config build so a known opcode pins
+		// its columns. Live sessions start at logs.length === 0 and are unaffected.
+		if (logs.length > 0) {
+			await calculate_config();
+		}
 	});
 
 	$: persist_auto_scroll(auto_scroll, config);
@@ -259,6 +272,32 @@
 		// columns are still built for the view, and the next real save persists a
 		// full config.
 		if (!config) return;
+		// A calibrated opcode gives a deterministic column baseline — apply it once
+		// per session (before the indices are read into config), over the saved
+		// order and the scramble-prone frequency heuristic. We deliberately do NOT
+		// set auto_detected here: when a CoGM roster is configured the content-based
+		// roster auto-detect still runs and can refine/self-heal these columns (it
+		// catches a same-opcode column shift a static map can't). Without a roster
+		// the registry columns stand. A manual edit (detect_source==='manual')
+		// always wins. The kill offset is pinned separately and config-free in
+		// resolve_kill_offset, so it self-heals the "0 kills" bug on every path.
+		const known = identifier ? lookup_packet(identifier) : null;
+		if (
+			identifier &&
+			known &&
+			detect_source !== 'manual' &&
+			detect_source !== 'roster' &&
+			registry_applied !== identifier &&
+			possible_name_offsets[known.name_order.killer] &&
+			possible_name_offsets[known.name_order.victim] &&
+			possible_name_offsets[known.name_order.guild]
+		) {
+			registry_applied = identifier;
+			detect_source = 'registry';
+			player_one_index = known.name_order.killer;
+			player_two_index = known.name_order.victim;
+			guild_index = known.name_order.guild;
+		}
 		// record_pcap is owned by the record page's full-capture toggle, not this
 		// editor, which has no UI for it. This editor loaded its config snapshot at
 		// mount; if the user flips the toggle after that, the snapshot is stale, and
@@ -359,6 +398,13 @@
 	// the legacy heuristic as a last resort.
 	function resolve_kill_offset(logs: LogType[]) {
 		if (logs.length === 0) return [DEFAULT_KILL_OFFSET];
+		// A calibrated opcode decodes deterministically: use its validated flag
+		// offset and skip the heuristics. This is the fix for "every player shows
+		// 0 kills" — the 640100a115 layout puts the flag at char 259, but the
+		// default offset 15 (correct for the older 6b layout) lands inside the
+		// guild name there and always reads "died".
+		const known = lookup_packet(dominant_identifier(logs.map((l) => l.identifier)) ?? '');
+		if (known) return [known.kill];
 		if (is_binary_flag(logs, DEFAULT_KILL_OFFSET, false)) return [DEFAULT_KILL_OFFSET];
 		const structural = structural_kill_offset(logs);
 		if (structural.length) return structural;
@@ -604,6 +650,47 @@
 
 		return output;
 	}
+
+	// Reconstruct the raw diagnostic session (the exact engine output: identifier,
+	// time, "name offset" x5, hex per kill) from the parsed logs, so CoGM can
+	// store it for re-decoding after a recalibration and the uploader can
+	// re-download their raw data. Mirrors live_capture's emitted line format.
+	function get_raw_session(): string {
+		// Only meaningful when the logs carry the raw packet hex (live capture or a
+		// recovered session). An opened plain .log has no hex — nothing to store.
+		if (logs.length === 0 || !logs[0].hex) return '';
+		return logs
+			.filter((log) => log.hex)
+			.map(
+				(log) =>
+					`${log.identifier},${log.time},${log.names
+						.map((n) => `${n.name} ${n.offset}`)
+						.join(',')},${log.hex}`
+			)
+			.join('\n');
+	}
+
+	// Sanity gate: a real war is MIXED — your side takes kills AND deaths. If the
+	// decoded direction comes out almost entirely one-sided it nearly always
+	// means the kill flag is miscalibrated for this packet (the "0 kills" bug
+	// that shipped a whole war as all-deaths). Surface it loudly before the user
+	// saves or uploads a wrong recap. Needs a handful of kills to be meaningful;
+	// a genuine stomp rarely clears 97% one direction.
+	$: kd_sanity = (() => {
+		const off = possible_kill_offsets[kill_index];
+		if (off == null || logs.length < 40) return null;
+		let kills = 0;
+		for (const log of logs) if (log.hex[off] === '1') kills++;
+		const deaths = logs.length - kills;
+		// The all-deaths bug produced EXACTLY one direction (0 of the other side).
+		// A real war always has kills on both sides, so a zero side is the precise
+		// tell — and unlike a small-percentage threshold it won't false-fire on a
+		// lopsided-but-real blowout. Requires a meaningful sample first.
+		if (Math.min(kills, deaths) === 0) {
+			return { kills, deaths };
+		}
+		return null;
+	})();
 
 	// ── Kill-location coords for the CoGM heatmap ──────────────────────────
 	// BDO writes each kill's world position into the packet tail: little-endian
@@ -912,6 +999,7 @@
 		}
 		ModalManager.open(CogmUploadModal, {
 			logs_string: get_logs_string(),
+			raw_session: get_raw_session(),
 			coords: get_coords(),
 			on_uploaded: clear_session
 		});
@@ -919,6 +1007,17 @@
 </script>
 
 <div class="flex flex-col gap-2 items-center w-full flex-1 min-h-0 relative">
+	<!-- Sanity gate: an almost entirely one-directional war means the kill
+	     direction is likely miscalibrated for this packet. Warn before save/upload. -->
+	{#if kd_sanity}
+		<div
+			class="w-full rounded-lg border border-status-error/50 bg-status-error/10 p-3 text-caption text-status-error leading-relaxed"
+		>
+			Heads up: this war decoded as <b>{kd_sanity.kills} kills / {kd_sanity.deaths} deaths</b> — entirely
+			one direction, which almost always means the kill direction is wrong for this packet version. Check
+			the Name order and kill column below before you save or upload.
+		</div>
+	{/if}
 	<!-- Name order: set which captured column is the Killer, Victim, and Guild
 	     once. Manual dropdowns are the source of truth; Auto-detect just fills
 	     them in. The same update_names/get_name logic the rows always used. -->
@@ -937,7 +1036,9 @@
 						: `Auto-detect${personal_family_name ? ` from "${personal_family_name}"` : ''}`}
 				</button>
 			</div>
-			{#if detect_source === 'roster'}
+			{#if detect_source === 'registry'}
+				<p class="text-caption text-status-ok">Calibrated for this game version — order and kill direction set automatically.</p>
+			{:else if detect_source === 'roster'}
 				<p class="text-caption text-status-ok">Matched to your CoGM roster.</p>
 			{:else if detect_source === 'manual'}
 				<p class="text-caption text-foreground-secondary">Manual order.</p>
