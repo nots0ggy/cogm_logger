@@ -692,6 +692,31 @@
 		return null;
 	})();
 
+	// The dominant captured packet opcode, but only when the logs carry raw
+	// packet hex (live capture or a recovered session). An opened plain .log has
+	// no hex and no opcode — nothing to check — so this stays null and the opcode
+	// guard is off. Requiring BOTH hex and a non-empty identifier makes the
+	// null fallback deliberate rather than an empty-array side effect.
+	$: dominant_opcode = (() => {
+		const ids = logs.filter((l) => l.hex && l.identifier).map((l) => l.identifier);
+		return ids.length ? dominant_identifier(ids) : null;
+	})();
+	// An opcode we have NOT calibrated. BDO uses a different kill-packet opcode
+	// per node-war server (Balenos/Calpheon/Ulukita/Valencia each differ), so an
+	// unknown one means the layout is a guess from the heuristic, not a known
+	// mapping — the decode (columns AND direction) can't be trusted.
+	$: unknown_opcode = dominant_opcode != null && !lookup_packet(dominant_opcode);
+
+	// Layer 1 upload guard: refuse to push a war we can't decode safely instead
+	// of shipping a scrambled recap to CoGM. Two unrecoverable failure modes:
+	//   'unknown-opcode' — a server type the registry hasn't been calibrated for.
+	//   'one-sided'      — kd_sanity: 0 kills or 0 deaths => kill direction wrong.
+	// unknown-opcode is checked FIRST: an uncalibrated server almost always ALSO
+	// decodes one-sided, but the fix there is "save and send to support", not
+	// "adjust the name order", so the more specific reason must win.
+	// Save stays enabled so the raw session can still be preserved and sent in.
+	$: upload_block = unknown_opcode ? 'unknown-opcode' : kd_sanity ? 'one-sided' : null;
+
 	// ── Kill-location coords for the CoGM heatmap ──────────────────────────
 	// BDO writes each kill's world position into the packet tail: little-endian
 	// The kill packet carries the world position as three little-endian float32s
@@ -865,6 +890,17 @@
 	}
 
 	async function upload() {
+		// Same hard stop as open_cogm_upload: never push an un-decodable war to an
+		// external site. Mirrors the disabled button; defends a non-button caller.
+		if (upload_block) {
+			show_toast(
+				upload_block === 'unknown-opcode'
+					? "This war is from a server type the logger hasn't been calibrated for yet. Save it and send the file to CoGM support."
+					: 'This war decoded one direction only — the kill direction is wrong. Fix the Name order / kill column before uploading.',
+				'error'
+			);
+			return;
+		}
 		const website = dev ? 'http://localhost:5174' : 'https://ikusa.site';
 		const result = await fetch(website + '/api/create', {
 			method: 'POST',
@@ -992,6 +1028,18 @@
 	}
 
 	async function open_cogm_upload() {
+		// Hard stop on an un-decodable war so a scrambled recap never reaches CoGM.
+		// Mirrors the disabled button below; defends the path if it's ever called
+		// some other way.
+		if (upload_block) {
+			show_toast(
+				upload_block === 'unknown-opcode'
+					? "This war is from a server type the logger hasn't been calibrated for yet. Save it and send the file to CoGM support."
+					: 'This war decoded one direction only — the kill direction is wrong. Fix the Name order / kill column before uploading.',
+				'error'
+			);
+			return;
+		}
 		const cfg = await get_config();
 		if (!cfg.cogm_token) {
 			show_toast('Set your CoGM token in Settings first', 'error');
@@ -1007,15 +1055,25 @@
 </script>
 
 <div class="flex flex-col gap-2 items-center w-full flex-1 min-h-0 relative">
-	<!-- Sanity gate: an almost entirely one-directional war means the kill
-	     direction is likely miscalibrated for this packet. Warn before save/upload. -->
-	{#if kd_sanity}
+	<!-- Layer 1 upload guard: block the CoGM upload (button below) and tell the
+	     user why, so a war the logger can't decode never reaches CoGM as a
+	     scrambled recap. Two cases: a one-sided decode (wrong kill direction) and
+	     an uncalibrated server opcode. Save stays available to preserve the data. -->
+	{#if upload_block === 'one-sided'}
 		<div
 			class="w-full rounded-lg border border-status-error/50 bg-status-error/10 p-3 text-caption text-status-error leading-relaxed"
 		>
-			Heads up: this war decoded as <b>{kd_sanity.kills} kills / {kd_sanity.deaths} deaths</b> — entirely
-			one direction, which almost always means the kill direction is wrong for this packet version. Check
-			the Name order and kill column below before you save or upload.
+			Upload blocked: this war decoded as <b>{kd_sanity?.kills} kills / {kd_sanity?.deaths} deaths</b> —
+			entirely one direction, which means the kill direction is wrong for this packet. Fix the Name order
+			and kill column below, or Save it and send the file to CoGM support.
+		</div>
+	{:else if upload_block === 'unknown-opcode'}
+		<div
+			class="w-full rounded-lg border border-status-error/50 bg-status-error/10 p-3 text-caption text-status-error leading-relaxed"
+		>
+			Upload blocked: this war is from a server type the logger hasn't been calibrated for yet
+			(packet <b>{dominant_opcode}</b>). Decoding it would be a guess. Save the war and send the file to
+			CoGM support to get this server added.
 		</div>
 	{/if}
 	<!-- Name order: set which captured column is the Killer, Victim, and Guild
@@ -1307,9 +1365,16 @@
 		class="fixed bottom-0 left-0 right-0 z-20 border-t border-gray-700 bg-background/95 backdrop-blur"
 	>
 		<div class="max-w-4xl mx-auto flex gap-2 justify-center py-3 px-4">
-			<Button class="w-40" on:click={open_cogm_upload} {disabled}>Upload to CoGM</Button>
+			<!-- External uploads are blocked when the war can't be decoded safely
+			     (one-sided or uncalibrated opcode). Save stays enabled so the raw
+			     session is never lost and can be sent to support for calibration. -->
+			<Button class="w-40" on:click={open_cogm_upload} disabled={disabled || !!upload_block}
+				>Upload to CoGM</Button
+			>
 			<Button class="w-32" on:click={save_logs} color="secondary" {disabled}>Save</Button>
-			<Button class="w-36" on:click={upload} color="secondary" {disabled}>Upload (Ikusa)</Button>
+			<Button class="w-36" on:click={upload} color="secondary" disabled={disabled || !!upload_block}
+				>Upload (Ikusa)</Button
+			>
 		</div>
 	</div>
 </div>

@@ -36,7 +36,13 @@ export const KNOWN_PACKETS: Record<string, PacketConfig> = {
 	// Pre-2026-06-18 layout. 10-byte header prefix, so the direction flag is in
 	// the header at byte 7 (hex char 15). Family fields are SWAPPED vs the 640
 	// layout: col3 (subject) / col4 (enemy). Validated against a RAT warscore.
-	'6b01003f0e': { name_order: { killer: 3, victim: 4, guild: 0 }, kill: 15 }
+	'6b01003f0e': { name_order: { killer: 3, victim: 4, guild: 0 }, kill: 15 },
+	// 2026-06-25 patch. Guild moved to the middle (col2) and the columns are
+	// interleaved char/char/guild/fam/fam: col0 enemy char, col1 subject char,
+	// col2 guild, col3 enemy family, col4 subject family. Direction flag at hex
+	// char 265 (byte 132 low nibble), '1' => subject killed. Validated against
+	// RAT's in-game WIN screen (14/15 families matched, kills near-exact).
+	'680100a40d': { name_order: { killer: 4, victim: 3, guild: 2 }, kill: 265 }
 };
 
 /** The decode config for an opcode, or null when it isn't calibrated yet. */
