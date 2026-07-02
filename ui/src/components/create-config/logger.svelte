@@ -719,10 +719,84 @@
 	// blowout" override. The unknown-opcode guard has no override: decoding an
 	// uncalibrated packet is a guess no confirmation can fix.
 	let kd_override = false;
+	// Guards the once-per-opcode auto-calibration submit below.
+	let calibration_sent_for: string | null = null;
 	// A cleared session (new recording / different file) must not inherit a
-	// previous war's override.
-	$: if (logs.length === 0) kd_override = false;
+	// previous war's override or calibration-sent guard.
+	$: if (logs.length === 0) {
+		kd_override = false;
+		calibration_sent_for = null;
+	}
 	$: upload_block = unknown_opcode ? 'unknown-opcode' : kd_sanity && !kd_override ? 'one-sided' : null;
+
+	// ── Auto-calibration submit ────────────────────────────────────────────
+	// When the war is blocked on an uncalibrated opcode, the user can ship the
+	// raw session to CoGM (button in the block banner). The server derives the
+	// column/flag map (roster-anchored) and adds it to the registry — every
+	// logger then decodes this server on its next launch. User-initiated so it
+	// sends the full session (not a mid-war partial) and never sends data
+	// unprompted. Guarded once per opcode; best-effort.
+	let calibration_sending = false;
+
+	async function send_calibration(opcode: string) {
+		if (calibration_sending || calibration_sent_for === opcode) return;
+		// Set the in-flight guard before the first await so a fast double-click
+		// can't fire two requests.
+		calibration_sending = true;
+		try {
+			const cfg = await get_config();
+			if (!cfg.cogm_token) {
+				show_toast('Set your CoGM token in Settings first', 'error');
+				return;
+			}
+			const raw = get_raw_session();
+			if (!raw) {
+				show_toast('This war has no raw packet data to calibrate from.', 'error');
+				return;
+			}
+			const base = (cfg.cogm_url || 'https://cogm.app').replace(/\/$/, '');
+			const res = await fetch(`${base}/api/logger/calibration-intake`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${cfg.cogm_token}`
+				},
+				body: JSON.stringify({ rawSession: raw })
+			});
+			if (!res.ok) {
+				show_toast(
+					res.status === 401
+						? 'Your CoGM token was rejected. Re-check it in Settings.'
+						: res.status === 429
+							? 'Too many calibration submissions. Wait a minute and try again.'
+							: 'Could not reach CoGM to calibrate. Try again in a moment.',
+					'error'
+				);
+				return;
+			}
+			const j = await res.json().catch(() => null);
+			const outcome = j?.outcome as string | undefined;
+			// Only lock the guard + claim success for real terminal outcomes; a
+			// server-side error (200 {status:'error'}) or an unknown body should
+			// stay retryable.
+			if (outcome === 'applied' || outcome === 'already_known') {
+				calibration_sent_for = opcode;
+				show_toast(
+					'CoGM calibrated this server. Restart the logger in a few minutes, then reopen this war to upload.',
+					'success'
+				);
+			} else if (outcome === 'awaiting_consensus' || outcome === 'review') {
+				calibration_sent_for = opcode;
+				show_toast('Sent this war to CoGM for calibration. We will get this server added.', 'success');
+			} else {
+				show_toast('CoGM could not calibrate this war. Please report it in the support server.', 'error');
+			}
+		} catch {
+			show_toast('Could not reach CoGM to calibrate. Try again in a moment.', 'error');
+		} finally {
+			calibration_sending = false;
+		}
+	}
 
 	// ── Kill-location coords for the CoGM heatmap ──────────────────────────
 	// BDO writes each kill's world position into the packet tail: little-endian
@@ -1094,8 +1168,20 @@
 			class="w-full rounded-lg border border-status-error/50 bg-status-error/10 p-3 text-caption text-status-error leading-relaxed"
 		>
 			Upload blocked: this war is from a server type the logger hasn't been calibrated for yet
-			(packet <b>{dominant_opcode}</b>). Decoding it would be a guess. Save the war and send the file to
-			CoGM support to get this server added.
+			(packet <b>{dominant_opcode}</b>). Decoding it would be a guess.
+			{#if calibration_sent_for === dominant_opcode}
+				Sent to CoGM to auto-calibrate this server. Restart the logger in a few minutes, then reopen
+				this war to upload. Your data is saved.
+			{:else}
+				Send it to CoGM and we auto-calibrate this server, or Save the war to keep your data.
+				<button
+					class="block mt-2 text-xs font-semibold underline underline-offset-2 hover:opacity-80 transition-opacity disabled:opacity-50"
+					disabled={calibration_sending}
+					on:click={() => dominant_opcode && send_calibration(dominant_opcode)}
+				>
+					{calibration_sending ? 'Sending…' : 'Send to CoGM to auto-calibrate this server'}
+				</button>
+			{/if}
 		</div>
 	{/if}
 	<!-- Name order: set which captured column is the Killer, Victim, and Guild
