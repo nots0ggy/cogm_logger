@@ -45,7 +45,13 @@ export const KNOWN_PACKETS: Record<string, PacketConfig> = {
 	// col2 guild, col3 enemy family, col4 subject family. Direction flag at hex
 	// char 265 (byte 132 low nibble), '1' => subject killed. Validated against
 	// RAT's in-game WIN screen (14/15 families matched, kills near-exact).
-	'680100a40d': { name_order: { killer: 4, victim: 3, guild: 2 }, kill: 265 }
+	'680100a40d': { name_order: { killer: 4, victim: 3, guild: 2 }, kill: 265 },
+	// Edania node-war server, first seen 2026-07-02 (packet type 0x1CD6).
+	// col0 enemy char, col1 guild, col2 subject char, col3 subject family,
+	// col4 enemy family; flag at hex char 143 (byte 71), the only strict 0/1
+	// byte in the packet. Calibrated from a RAT raw session (100% roster
+	// anchoring on col3); direction matches the heuristic decode (704/410).
+	'640100d61c': { name_order: { killer: 3, victim: 4, guild: 1 }, kill: 143 }
 };
 
 // ── Remote registry ─────────────────────────────────────────────────────────
