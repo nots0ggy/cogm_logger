@@ -4,6 +4,7 @@
 	import Logger from '../../components/create-config/logger.svelte';
 	import { open_file } from '../../logic/file';
 	import { get_config, type Log, type LogType } from '../../components/create-config/config';
+	import { log_dedup_key, reframe_log } from '../../components/create-config/packet-registry';
 	import { filesystem } from '@neutralinojs/lib';
 	import LogEditor from '../../components/create-config/log-editor.svelte';
 	let logs: LogType[] = [];
@@ -24,7 +25,9 @@
 		if (status === 'running') {
 			const d = data.split(',');
 			if (d.length === 8 && !data.includes('Network Interfaces:')) {
-				const new_log = {
+				// reframe_log recovers records the capture engine anchored a few
+				// bytes early (unknown opcode with the real packet embedded).
+				const new_log = reframe_log({
 					identifier: d[0],
 					time: d[1],
 					names: d.slice(2, 7).map((name) => {
@@ -32,13 +35,11 @@
 						return { name: split[0], offset: +split[1] };
 					}),
 					hex: d[7]
-				};
+				});
 
 				// Dedup via a Set rather than logs.find() per record (O(n^2) on a
 				// big capture). Reset alongside logs in open_pcap.
-				const dedup_key = `${new_log.identifier}|${new_log.time}|${new_log.names
-					.map((n) => n.name)
-					.join(',')}`;
+				const dedup_key = log_dedup_key(new_log);
 				if (seen_logs.has(dedup_key)) return;
 				seen_logs.add(dedup_key);
 

@@ -323,7 +323,6 @@
 
 	$: get_name_options = (i: number, log: LogType) => {
 		const names = possible_name_offsets
-			/* .filter((_, index) => index !== i) */
 			.map((list, index) => {
 				const selected = name_indicies[index];
 				return hexToString(log.hex.slice(list[selected].offset, list[selected].offset + 64))
@@ -715,7 +714,15 @@
 	// decodes one-sided, but the fix there is "save and send to support", not
 	// "adjust the name order", so the more specific reason must win.
 	// Save stays enabled so the raw session can still be preserved and sent in.
-	$: upload_block = unknown_opcode ? 'unknown-opcode' : kd_sanity ? 'one-sided' : null;
+	// kd_override: a genuine stomp CAN end 0 on one side, so the one-sided
+	// guard is confirmable — the banner offers an explicit "this is a real
+	// blowout" override. The unknown-opcode guard has no override: decoding an
+	// uncalibrated packet is a guess no confirmation can fix.
+	let kd_override = false;
+	// A cleared session (new recording / different file) must not inherit a
+	// previous war's override.
+	$: if (logs.length === 0) kd_override = false;
+	$: upload_block = unknown_opcode ? 'unknown-opcode' : kd_sanity && !kd_override ? 'one-sided' : null;
 
 	// ── Kill-location coords for the CoGM heatmap ──────────────────────────
 	// BDO writes each kill's world position into the packet tail: little-endian
@@ -889,7 +896,11 @@
 		await filesystem.writeFile(live_output_path, get_logs_string());
 	}
 
+	// Re-entry guard: a double-click on the Ikusa button would POST the war
+	// twice (the CoGM modal has its own in_flight guard).
+	let ikusa_uploading = false;
 	async function upload() {
+		if (ikusa_uploading) return;
 		// Same hard stop as open_cogm_upload: never push an un-decodable war to an
 		// external site. Mirrors the disabled button; defends a non-button caller.
 		if (upload_block) {
@@ -901,24 +912,29 @@
 			);
 			return;
 		}
-		const website = dev ? 'http://localhost:5174' : 'https://ikusa.site';
-		const result = await fetch(website + '/api/create', {
-			method: 'POST',
-			body: get_logs_string(),
-			headers: {
-				'Content-Type': 'text/plain'
-			}
-		});
+		ikusa_uploading = true;
+		try {
+			const website = dev ? 'http://localhost:5174' : 'https://ikusa.site';
+			const result = await fetch(website + '/api/create', {
+				method: 'POST',
+				body: get_logs_string(),
+				headers: {
+					'Content-Type': 'text/plain'
+				}
+			});
 
-		if (result.status === 200) {
-			const id = (await result.json()).id;
-			os.open(`${website}/wars?id=${id}`);
-			// The war is preserved on ikusa.site now, so drop the local recovery
-			// copy the same way Save and Upload to CoGM do. Only on success: a
-			// failed upload should keep the recovery file so the war isn't lost.
-			await clear_session();
-		} else {
-			console.error(result);
+			if (result.status === 200) {
+				const id = (await result.json()).id;
+				os.open(`${website}/wars?id=${id}`);
+				// The war is preserved on ikusa.site now, so drop the local recovery
+				// copy the same way Save and Upload to CoGM do. Only on success: a
+				// failed upload should keep the recovery file so the war isn't lost.
+				await clear_session();
+			} else {
+				console.error(result);
+			}
+		} finally {
+			ikusa_uploading = false;
 		}
 	}
 
@@ -1064,8 +1080,14 @@
 			class="w-full rounded-lg border border-status-error/50 bg-status-error/10 p-3 text-caption text-status-error leading-relaxed"
 		>
 			Upload blocked: this war decoded as <b>{kd_sanity?.kills} kills / {kd_sanity?.deaths} deaths</b> —
-			entirely one direction, which means the kill direction is wrong for this packet. Fix the Name order
-			and kill column below, or Save it and send the file to CoGM support.
+			entirely one direction, which usually means the kill direction is wrong for this packet. Fix the
+			Name order and kill column below, or Save it and send the file to CoGM support.
+			<button
+				class="block mt-2 text-xs font-semibold underline underline-offset-2 hover:opacity-80 transition-opacity"
+				on:click={() => (kd_override = true)}
+			>
+				This was a real one-sided stomp — allow the upload
+			</button>
 		</div>
 	{:else if upload_block === 'unknown-opcode'}
 		<div

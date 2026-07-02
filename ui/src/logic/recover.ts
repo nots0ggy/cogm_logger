@@ -1,5 +1,6 @@
 import { filesystem } from '@neutralinojs/lib';
 import type { LogType } from '../components/create-config/config';
+import { log_dedup_key, reframe_log } from '../components/create-config/packet-registry';
 import { get_capture_dir } from './paths';
 
 // The live capture engine writes each parsed record to a session-<ts>.log in
@@ -15,7 +16,9 @@ export type RecoverableSession = {
 function parse_line(line: string): LogType | null {
 	const d = line.split(',');
 	if (d.length !== 8) return null;
-	return {
+	// reframe_log recovers records the capture engine anchored a few bytes
+	// early (unknown opcode with the real packet embedded right behind it).
+	return reframe_log({
 		identifier: d[0],
 		time: d[1],
 		names: d.slice(2, 7).map((name) => {
@@ -23,7 +26,7 @@ function parse_line(line: string): LogType | null {
 			return { name: split[0], offset: +split[1] };
 		}),
 		hex: d[7]
-	};
+	});
 }
 
 /**
@@ -80,7 +83,7 @@ export async function find_last_session(): Promise<RecoverableSession | null> {
 		const log = parse_line(trimmed);
 		if (!log) continue;
 		// Dedup identical records the same way the live view does.
-		const key = `${log.identifier}|${log.time}|${log.names.map((n) => n.name).join(',')}`;
+		const key = log_dedup_key(log);
 		if (seen.has(key)) continue;
 		seen.add(key);
 		logs.push(log);

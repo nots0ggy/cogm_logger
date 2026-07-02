@@ -10,6 +10,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import Logger from '../../components/create-config/logger.svelte';
 	import { get_config, type Config, type LogType } from '../../components/create-config/config';
+	import { log_dedup_key, reframe_log } from '../../components/create-config/packet-registry';
 	import { recording_state, recording_started_at, packets_seen } from '../../logic/recording-store';
 	import { capture_path } from '../../logic/paths';
 	import StatusDot from '../../components/status-dot.svelte';
@@ -98,7 +99,9 @@
 					recording_state.set('recording');
 					capture_error = null;
 				}
-				const new_log = {
+				// reframe_log recovers records the capture engine anchored a few
+				// bytes early (unknown opcode with the real packet embedded).
+				const new_log = reframe_log({
 					identifier: d[0],
 					time: d[1],
 					names: d.slice(2, 7).map((name) => {
@@ -106,15 +109,13 @@
 						return { name: split[0], offset: +split[1] };
 					}),
 					hex: d[7]
-				};
+				});
 
 				// Dedup by key via a Set instead of logs.find() per record. find()
 				// is O(n) per kill, so a long siege with thousands of kills degraded
 				// to O(n^2) and the feed lagged late in the war. The key matches the
 				// recover parser's format.
-				const dedup_key = `${new_log.identifier}|${new_log.time}|${new_log.names
-					.map((n) => n.name)
-					.join(',')}`;
+				const dedup_key = log_dedup_key(new_log);
 				if (seen_logs.has(dedup_key)) return;
 				seen_logs.add(dedup_key);
 

@@ -2,6 +2,8 @@
 	import { init, events, app } from '@neutralinojs/lib';
 	import { onMount } from 'svelte';
 	import { kill_logger_process } from '../logic/logger-wrapper';
+	import { get_config } from '../components/create-config/config';
+	import { init_remote_registry } from '../components/create-config/packet-registry';
 	import '../app.css';
 	import Modal from '../svelte-ui/modal/modal.svelte';
 	import { Toaster } from 'svelte-french-toast';
@@ -15,6 +17,12 @@
 		init();
 		events.on('ready', () => {
 			is_ready = true;
+			// Pull the calibrated packet registry from cogm.app in the background
+			// (cached for offline use; the compiled table is the fallback). Never
+			// blocks the UI and never throws.
+			get_config()
+				.then((cfg) => init_remote_registry(cfg.cogm_url || 'https://cogm.app'))
+				.catch(() => {});
 		});
 		events.on('windowClose', async () => {
 			// Kill the sniffer before exiting. Was an unguarded Windows taskkill

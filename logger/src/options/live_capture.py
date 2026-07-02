@@ -75,6 +75,18 @@ _DIAG_SUMMARY_EVERY = 500
 identifier_regex = r"[56][0-9a-f]0100[0-9a-f]{4}"
 name_regex = r"^[A-Z][a-zA-Z0-9_]{2,15}$"
 
+# War-server IPs learned this session. A source locks in after it produces
+# _LOCK_THRESHOLD parsed kill records — one record could conceivably be a
+# fluke payload from unrelated traffic, and a false lock would misdirect the
+# pcap scope for the whole session. A mid-war channel swap just locks the new
+# server the same way (kill packets always pass the identifier pre-check, so
+# the swap is picked up even with the IP filter on). Replaces the old
+# hardcoded BDO IP list, which went stale when BDO moved Azure ranges. Reset
+# per session in start_sniff/open_pcap.
+_locked_ips = set()
+_lock_counts = {}
+_LOCK_THRESHOLD = 3
+
 
 def _diag_write_summary():
     # One-line snapshot of what the parser is seeing. Written periodically (so a
@@ -127,40 +139,55 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
         return
 
     package_src = package["IP"].src
-
-    # checks if the package derives from bdo
-    is_bdo_ip = (not ip_filter) or (
-        len(
-            (
-                [
-                    ip
-                    for ip in ["20.76.13", "20.76.14", "13.64.17", "13.93.181"]
-                    if ip in package_src
-                ]
-            )
-        )
-        > 0
-    )
+    package_dst = package["IP"].dst
 
     # checkes if the packages comes from a tcp stream
     uses_tcp = "TCP" in package and hasattr(package["TCP"].payload, "load")
-    if is_bdo_ip and uses_tcp:
-        # Write the raw packet to the always-on pcap before parsing so we still
-        # capture subtype packets that don't yield a 5-name match. Goes through
-        # the single long-lived _pcap_writer (opened in start_sniff) instead of
-        # a per-packet open+append, which lagged the sniff thread and dropped
-        # packets at war rates.
-        if _pcap_writer is not None:
-            try:
-                _pcap_writer.write(package)
-                _pcap_count += 1
-                if _pcap_count % 100 == 0:
-                    _pcap_writer.flush()
-            except Exception as exc:
-                print(f"pcap write failed: {exc}", flush=True)
+    if uses_tcp:
+        # Dynamic server lock replaces the old hardcoded BDO IP list (which
+        # went stale when BDO moved Azure ranges and would have silently
+        # zeroed the capture — see _locked_ips above).
+        locked = len(_locked_ips) > 0
 
         # loads the payload as raw hex
         payload = bytes(package["TCP"].payload).hex()
+
+        # Write to the always-on pcap so subtype packets that don't yield a
+        # 5-name match are still captured for protocol research. Once locked,
+        # record the war server's traffic in BOTH directions (this runs before
+        # the parse gate below on purpose — outbound client->server packets
+        # never carry the identifier). Before the lock, keep only packets that
+        # look like kill candidates so the file doesn't fill with the user's
+        # unrelated traffic. Goes through the single long-lived _pcap_writer
+        # (opened in start_sniff) instead of a per-packet open+append, which
+        # lagged the sniff thread and dropped packets at war rates.
+        if _pcap_writer is not None:
+            record_this = (
+                (package_src in _locked_ips or package_dst in _locked_ips)
+                if locked
+                else re.search(identifier_regex, payload) is not None
+            )
+            if record_this:
+                try:
+                    _pcap_writer.write(package)
+                    _pcap_count += 1
+                    if _pcap_count % 100 == 0:
+                        _pcap_writer.flush()
+                except Exception as exc:
+                    print(f"pcap write failed: {exc}", flush=True)
+
+        # IP-filter parse gate: skip payloads from hosts that are not a locked
+        # war server unless they carry the kill-packet identifier themselves.
+        # Kill packets always match, so the pre-lock discovery and a mid-war
+        # channel swap both keep working; everything else is dropped before it
+        # can touch the shared last_payload parse buffer. Off by default —
+        # with the filter off, behaviour is unchanged (parse everything).
+        if (
+            ip_filter
+            and package_src not in _locked_ips
+            and re.search(identifier_regex, payload) is None
+        ):
+            return
 
         # iterate through the payload and try to find the identifier + player names + guild name + kill
         payload = last_payload + payload
@@ -220,6 +247,14 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
                 # (best-effort, no-op when the diag file isn't open).
                 _diag_record(len(names), names, possible_log, package)
                 if len(names) == 5:
+                    # A kill record: count towards locking onto its server
+                    # (threshold guards against a fluke false-positive payload
+                    # hijacking the session — see _locked_ips).
+                    if package_src not in _locked_ips:
+                        _lock_counts[package_src] = _lock_counts.get(package_src, 0) + 1
+                        if _lock_counts[package_src] >= _LOCK_THRESHOLD:
+                            _locked_ips.add(package_src)
+                            print(f"Locked onto war server {package_src}", flush=True)
                     time = strftime("%H:%M:%S", localtime(int(package.time)))
                     line = (
                         payload[0:10]
@@ -254,9 +289,14 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
 
 
 def open_pcap(file, output, ip_filter=True, record_pcap_path=None):
+    global _locked_ips, _lock_counts
     if file != None and not os.path.isfile(file):
         print("Invalid file", flush=True)
         return
+    # Fresh server lock per replay, same as start_sniff — a stale lock from a
+    # previous file in the same process would silently zero the next one.
+    _locked_ips = set()
+    _lock_counts = {}
     print("Reading " + file, flush=True)
     if os.name == "nt":
         print("Loading file into ram. This may take a while.", flush=True)
@@ -297,10 +337,13 @@ def read_network_interfaces():
 
 
 def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=None):
-    global _log_file, _pcap_writer, _pcap_count
+    global _log_file, _pcap_writer, _pcap_count, _locked_ips, _lock_counts
     global _diag_file, _diag_counts, _diag_samples, _diag_candidates
     try:
         print("Reading Network...", flush=True)
+        # Fresh server lock per session (see _locked_ips above).
+        _locked_ips = set()
+        _lock_counts = {}
         if record_pcap_path is not None:
             # Absolute path so the UI can show the user exactly where the
             # full-packet capture lands (for sharing it in for research).
