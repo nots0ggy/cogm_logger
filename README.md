@@ -15,6 +15,8 @@ Upload a war and CoGM turns it into:
 - War recaps posted to your Discord, scoreboards, and guild-vs-guild history
 - Class breakdowns, capped and uncapped detection, and per-player performance over time
 
+![Kill heatmap of a real siege: 5,198 kills plotted on the BDO map, green for your guild, red for the enemy](docs/screenshots/kill-heatmap.png)
+
 The logger reads the same unencrypted combat messages the game already shows you in chat. It does not read memory, inject anything, or touch game files.
 
 ## Install
