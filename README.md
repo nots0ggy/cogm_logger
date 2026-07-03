@@ -2,9 +2,9 @@
 
 Records the combat log of your Black Desert Online node wars and sieges, then uploads the war to your guild's [CoGM](https://cogm.app) event log in one click.
 
-Built on [Ikusa Logger](https://github.com/sch-28/ikusa_logger) by [sch-28](https://github.com/sch-28). The capture engine, the config calibration, and the `.log` format are his work. This fork adds the CoGM upload pipeline, automatic packet recalibration after BDO patches, and CoGM branding. If you want a standalone visualizer instead of a guild platform, his [ikusa website](https://github.com/sch-28/ikusa) reads the same log files.
+Built on [Ikusa Logger](https://github.com/sch-28/ikusa_logger) by [sch-28](https://github.com/sch-28). The capture engine, the config calibration, and the `.log` format are his work. This fork adds the CoGM upload pipeline, kill-location capture for the [kill heatmap](https://cogm.app), automatic packet recalibration after BDO patches, and CoGM branding. If you want a standalone visualizer instead of a guild platform, his [ikusa website](https://github.com/sch-28/ikusa) reads the same log files.
 
-https://user-images.githubusercontent.com/42447473/184521641-e66a6bc4-191f-4c60-ae56-5172b052ec09.mp4
+![CoGM Logger home screen](docs/screenshots/home.png)
 
 ## What you get
 
@@ -34,6 +34,8 @@ The app keeps itself current. When a new version ships, it downloads and applies
 4. Or click `Save` to keep the `.log` file and upload it from the CoGM dashboard later.
 
 Uploading needs a logger token. A guild officer creates one in the CoGM dashboard under your guild's Settings, and you paste it into the logger's Settings once. Tokens are per guild, so wars land in the right event log.
+
+![Logger settings: capture, name order, and the CoGM upload token](docs/screenshots/settings.png)
 
 ## When a BDO patch breaks logging
 
