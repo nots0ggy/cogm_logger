@@ -1,67 +1,81 @@
 # CoGM Logger
-A tool for Black Desert Online to log combat messages, with direct upload to [CoGM](https://cogm.app) war analytics.
 
-Made from [Ikusa Logger](https://github.com/sch-28/ikusa_logger), by [sch-28](https://github.com/sch-28) (ORACLE#7672). The capture engine, config calibration, and log format are his work. This fork adds the CoGM upload integration and CoGM branding.
+Records the combat log of your Black Desert Online node wars and sieges, then uploads the war to your guild's [CoGM](https://cogm.app) event log in one click.
+
+Built on [Ikusa Logger](https://github.com/sch-28/ikusa_logger) by [sch-28](https://github.com/sch-28). The capture engine, the config calibration, and the `.log` format are his work. This fork adds the CoGM upload pipeline, automatic packet recalibration after BDO patches, and CoGM branding. If you want a standalone visualizer instead of a guild platform, his [ikusa website](https://github.com/sch-28/ikusa) reads the same log files.
 
 https://user-images.githubusercontent.com/42447473/184521641-e66a6bc4-191f-4c60-ae56-5172b052ec09.mp4
 
-Visualize your captured logs with sch-28's [ikusa website](https://github.com/sch-28/ikusa), or upload them straight to your guild's [CoGM](https://cogm.app) event log from the app.
+## What you get
 
-## Prerequisites
+Upload a war and CoGM turns it into:
 
-### Windows
-- [Npcap - 1.7.8](https://npcap.com/dist/)
-- [Node.js - 16+](https://nodejs.org/en/download/)
-- [Python - 3+](https://www.python.org/downloads/)
-  - In the installer, make sure to check "Add Python to environment variables"
+- A full kill and death feed with per-player K/D for your guild, allies, and every enemy guild
+- Kill locations plotted on the BDO map, with a heatmap across wars
+- War recaps posted to your Discord, scoreboards, and guild-vs-guild history
+- Class breakdowns, capped and uncapped detection, and per-player performance over time
 
-### Linux
+The logger reads the same unencrypted combat messages the game already shows you in chat. It does not read memory, inject anything, or touch game files.
+
+## Install
+
+Grab the latest release from the [releases page](https://github.com/nots0ggy/cogm_logger/releases):
+
+- `cogm-logger-installer.exe` installs it (Windows)
+- `cogm-logger-portable.zip` runs from a folder, no install
+
+The app keeps itself current. When a new version ships, it downloads and applies on the next launch.
+
+## Record and upload a war
+
+1. Open the logger and click `Record` before or during the fight.
+2. Stop when the war ends. Check the name order at the top: it should read `Family-1 kills/died to Family-2 from Enemy-Guild`. If the order is wrong, flip it. You can also reopen any `.log` file later and fix the order.
+3. Click `Upload`. The war lands in your guild's CoGM event log, parsed and scored.
+4. Or click `Save` to keep the `.log` file and upload it from the CoGM dashboard later.
+
+Uploading needs a logger token. A guild officer creates one in the CoGM dashboard under your guild's Settings, and you paste it into the logger's Settings once. Tokens are per guild, so wars land in the right event log.
+
+## When a BDO patch breaks logging
+
+Patches sometimes change the packets the game sends, and the logger stops reading kills. You do not have to wait for a new version:
+
+1. The logger detects the unknown packet and blocks the bad upload.
+2. Click `Send to CoGM`. The war goes to us for calibration.
+3. We publish the corrected packet registry and every logger picks it up within minutes. Nothing to reinstall.
+
+## Build from source
+
+Users should take the installer above. Building is only needed for development.
+
+Windows needs [Npcap 1.7.8](https://npcap.com/dist/), [Node.js 16+](https://nodejs.org/en/download/), and [Python 3](https://www.python.org/downloads/) with "Add Python to environment variables" checked. Linux needs `nodejs libcap python3 patchelf`.
+
 ```
-nodejs libcap python3 patchelf
+git clone git@github.com:nots0ggy/cogm_logger.git
+cd cogm_logger
+build.bat        # Windows
+./build.sh       # Linux
 ```
 
-## Installation
-1. Clone the repository
-2. Make sure you have the prerequisites installed
-3. Run the build script for your platform:
-   - Windows: `build.bat`
-   - Linux: `build.sh`
-
-## Usage
-1. Start the logger:
-   - Windows: `cogm-logger-win_x64.exe` located in `/dist/cogm-logger/`
-   - Linux: `start.sh`
-2. Click on the `Record` button
-3. After you are done recording, make sure to order the names of the players in the correct order!
-The order should be: `Family-Name-1 kills/died to Family-Name-2 from Enemy-Guild`
-4. Download the logs by clicking `Save` or upload the logs directly to the website by clicking `Upload`
-
-If you noticed that you have chosen the wrong name order, you can open the `.log` file again with the logger and adjust the names.
-
-https://github.com/sch-28/ikusa_logger/assets/42447473/ebcd67f0-c43a-4d12-b38d-79a7542e92ed
+Start it with `dist/cogm-logger/cogm-logger-win_x64.exe` on Windows or `./start.sh` on Linux.
 
 ## Protocol research: full payload capture
-The normal logger keeps only a 300-byte window around the combat-log
-identifier and pulls out four fields. To study the rest of the protocol
-(gear, class, damage, position, objectives), the capture engine has a full
-mode that records the entire TCP payload of every packet from BDO's servers,
-losslessly. Run the bundled logger exe directly:
+
+The normal logger keeps a 300-byte window around the combat-log identifier and pulls out four fields. To study the rest of the protocol (gear, class, damage, position, objectives), the capture engine has a full mode that records the entire TCP payload of every packet from BDO's servers:
 
 ```
 logger.exe -F -o captures/war.log
 ```
 
-This writes two files alongside each other:
-- `war.pcap` — full packets, open in Wireshark or read with scapy
-- `war.jsonl` — one line per packet: `{time, src, dst, sport, dport, seq, len, hex}`,
-  for grepping and diffing payloads to find field offsets
+This writes `war.pcap` (open in Wireshark or read with scapy) and `war.jsonl` (one line per packet: `{time, src, dst, sport, dport, seq, len, hex}` for grepping and diffing payloads). It captures the same unencrypted traffic the combat logger reads, in full. Live combat logging is unaffected. Notes from this work live in [docs/](docs/).
 
-It captures the same unencrypted server traffic the combat logger already
-reads, just in full. It does not touch live combat logging.
+## Troubleshooting
 
-## Startup Issue
-If you are unable to start the regular logger, try starting it with the `--mode=browser` argument.
+- Logger will not start: launch with `--mode=browser`.
+- No packets while recording: reinstall [Npcap](https://npcap.com/dist/) with "WinPcap API-compatible mode" checked, then restart.
+- Upload rejected: your token was revoked or the guild changed. Ask an officer for a fresh one.
 
-## Need help?
-For CoGM upload questions, join the [CoGM support server](https://discord.gg/rC4JEjEgnh).
-For the original logger, sch-28 is on Discord: sch.28
+## Help and credits
+
+CoGM questions: join the [CoGM support server](https://discord.gg/rC4JEjEgnh).
+
+The original logger is [ikusa_logger](https://github.com/sch-28/ikusa_logger) by sch-28 (Discord: sch.28). Go star it.
