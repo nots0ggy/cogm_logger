@@ -22,7 +22,13 @@
 		save_name_order_sample,
 		PERSONAL_FAMILY_NAME_KEY
 	} from '../../components/create-config/config';
-	import { lookup_packet, dominant_identifier } from './packet-registry';
+	import {
+		lookup_packet,
+		dominant_identifier,
+		is_uncalibrated,
+		refresh_remote_registry,
+		registry_version
+	} from './packet-registry';
 	import { filesystem, os, storage } from '@neutralinojs/lib';
 	import { onMount } from 'svelte';
 	import { ModalManager } from '../../svelte-ui/modal/modal-store';
@@ -704,7 +710,11 @@
 	// per node-war server (Balenos/Calpheon/Ulukita/Valencia each differ), so an
 	// unknown one means the layout is a guess from the heuristic, not a known
 	// mapping — the decode (columns AND direction) can't be trusted.
-	$: unknown_opcode = dominant_opcode != null && !lookup_packet(dominant_opcode);
+	// $registry_version is passed purely to create the dependency: the packet
+	// table lives in module scope, which Svelte cannot observe, so without it a
+	// war judged "unknown" stays judged that way even after a refresh makes the
+	// opcode decodable, which is precisely the stale-snapshot bug this replaces.
+	$: unknown_opcode = is_uncalibrated(dominant_opcode, $registry_version);
 
 	// Layer 1 upload guard: refuse to push a war we can't decode safely instead
 	// of shipping a scrambled recap to CoGM. Two unrecoverable failure modes:
@@ -721,11 +731,17 @@
 	let kd_override = false;
 	// Guards the once-per-opcode auto-calibration submit below.
 	let calibration_sent_for: string | null = null;
+	// Automatic block recovery (see recover_unknown_opcode). One attempt per
+	// opcode per session.
+	let recovery_state: 'idle' | 'refreshing' | 'calibrating' | 'waiting' | 'exhausted' = 'idle';
+	let recovery_for: string | null = null;
 	// A cleared session (new recording / different file) must not inherit a
 	// previous war's override or calibration-sent guard.
 	$: if (logs.length === 0) {
 		kd_override = false;
 		calibration_sent_for = null;
+		recovery_for = null;
+		recovery_state = 'idle';
 	}
 	$: upload_block = unknown_opcode ? 'unknown-opcode' : kd_sanity && !kd_override ? 'one-sided' : null;
 
@@ -781,10 +797,11 @@
 			// stay retryable.
 			if (outcome === 'applied' || outcome === 'already_known') {
 				calibration_sent_for = opcode;
-				show_toast(
-					'CoGM calibrated this server. Restart the logger in a few minutes, then reopen this war to upload.',
-					'success'
-				);
+				// No restart instruction any more: the recovery loop re-pulls the
+				// table itself, so the block clears in place. Telling someone to
+				// restart mid-session was the advice that cost three guilds their
+				// wars, because the war is already over by the time they read it.
+				show_toast('CoGM calibrated this server. Picking up the update now.', 'success');
 			} else if (outcome === 'awaiting_consensus' || outcome === 'review') {
 				calibration_sent_for = opcode;
 				show_toast('Sent this war to CoGM for calibration. We will get this server added.', 'success');
@@ -796,6 +813,83 @@
 		} finally {
 			calibration_sending = false;
 		}
+	}
+
+	// ── Automatic block recovery ───────────────────────────────────────────
+	// An unknown opcode used to be a dead end that only the user could walk out
+	// of: click "send to CoGM", restart the app, reopen the war. Every one of
+	// those steps happens after the war is over, and on 2026-07-30 three guilds
+	// lost wars to it on an opcode CoGM had already calibrated at 00:34 — their
+	// loggers were holding a launch-time snapshot and had no way to notice.
+	//
+	// The block now tries to clear itself, cheapest step first:
+	//   1. re-pull the table   — the answer is usually already published
+	//   2. ship the session    — the server derives the layout from the roster
+	//   3. poll a few times    — derivation is automatic and lands in seconds
+	// Only when all three come up empty does the user see a dead end, and by
+	// then their raw session is already with us and the war is recoverable.
+	const RECOVERY_POLLS = 6;
+	const RECOVERY_POLL_MS = 10_000;
+
+	async function recover_unknown_opcode(opcode: string) {
+		// Set before the first await so a burst of reactive updates cannot start
+		// two recoveries for the same opcode.
+		recovery_for = opcode;
+		let cfg;
+		try {
+			cfg = await get_config();
+		} catch {
+			recovery_state = 'exhausted';
+			return;
+		}
+		const url = (cfg.cogm_url || 'https://cogm.app').replace(/\/$/, '');
+
+		// 1 — the table already holds the answer more often than not.
+		recovery_state = 'refreshing';
+		await refresh_remote_registry(url).catch(() => false);
+		if (lookup_packet(opcode)) {
+			recovery_state = 'idle';
+			return;
+		}
+
+		// Steps 2 and 3 talk to CoGM. Someone with no token is a local-only user;
+		// leave them the manual banner rather than nagging them about settings
+		// for a feature they are not using.
+		if (!cfg.cogm_token) {
+			recovery_state = 'exhausted';
+			return;
+		}
+
+		// 2 — hand over the evidence.
+		recovery_state = 'calibrating';
+		await send_calibration(opcode);
+		if (lookup_packet(opcode)) {
+			recovery_state = 'idle';
+			return;
+		}
+
+		// 3 — wait for the server to finish deriving it.
+		recovery_state = 'waiting';
+		for (let i = 0; i < RECOVERY_POLLS; i++) {
+			await new Promise((resolve) => setTimeout(resolve, RECOVERY_POLL_MS));
+			await refresh_remote_registry(url).catch(() => false);
+			if (lookup_packet(opcode)) {
+				recovery_state = 'idle';
+				show_toast('CoGM calibrated this server. This war can be uploaded now.', 'success');
+				return;
+			}
+		}
+		recovery_state = 'exhausted';
+	}
+
+	$: if (unknown_opcode && dominant_opcode && recovery_for !== dominant_opcode) {
+		recover_unknown_opcode(dominant_opcode);
+	}
+
+	/** Clear the once-per-opcode guard so the reactive trigger runs again. */
+	function retry_recovery() {
+		recovery_for = null;
+		recovery_state = 'idle';
 	}
 
 	// ── Kill-location coords for the CoGM heatmap ──────────────────────────
@@ -980,8 +1074,8 @@
 		if (upload_block) {
 			show_toast(
 				upload_block === 'unknown-opcode'
-					? "This war is from a server type the logger hasn't been calibrated for yet. Save it and send the file to CoGM support."
-					: 'This war decoded one direction only — the kill direction is wrong. Fix the Name order / kill column before uploading.',
+					? 'This server type is still being calibrated. Give it a moment, the logger is handling it.'
+					: 'This war decoded one direction only, so the kill direction is wrong. Fix the Name order / kill column before uploading.',
 				'error'
 			);
 			return;
@@ -1124,8 +1218,8 @@
 		if (upload_block) {
 			show_toast(
 				upload_block === 'unknown-opcode'
-					? "This war is from a server type the logger hasn't been calibrated for yet. Save it and send the file to CoGM support."
-					: 'This war decoded one direction only — the kill direction is wrong. Fix the Name order / kill column before uploading.',
+					? 'This server type is still being calibrated. Give it a moment, the logger is handling it.'
+					: 'This war decoded one direction only, so the kill direction is wrong. Fix the Name order / kill column before uploading.',
 				'error'
 			);
 			return;
@@ -1163,25 +1257,37 @@
 				This was a real one-sided stomp — allow the upload
 			</button>
 		</div>
-	{:else if upload_block === 'unknown-opcode'}
+	{:else if upload_block === 'unknown-opcode' && recovery_state === 'exhausted'}
 		<div
 			class="w-full rounded-lg border border-status-error/50 bg-status-error/10 p-3 text-caption text-status-error leading-relaxed"
 		>
-			Upload blocked: this war is from a server type the logger hasn't been calibrated for yet
-			(packet <b>{dominant_opcode}</b>). Decoding it would be a guess.
-			{#if calibration_sent_for === dominant_opcode}
-				Sent to CoGM to auto-calibrate this server. Restart the logger in a few minutes, then reopen
-				this war to upload. Your data is saved.
-			{:else}
-				Send it to CoGM and we auto-calibrate this server, or Save the war to keep your data.
-				<button
-					class="block mt-2 text-xs font-semibold underline underline-offset-2 hover:opacity-80 transition-opacity disabled:opacity-50"
-					disabled={calibration_sending}
-					on:click={() => dominant_opcode && send_calibration(dominant_opcode)}
-				>
-					{calibration_sending ? 'Sending…' : 'Send to CoGM to auto-calibrate this server'}
-				</button>
-			{/if}
+			We have not calibrated this server type yet (packet <b>{dominant_opcode}</b>) and CoGM could not
+			work it out on its own. Your session has been sent to us, and Save keeps a copy on your machine.
+			We will add this server and you can upload the war then.
+			<button
+				class="block mt-2 text-xs font-semibold underline underline-offset-2 hover:opacity-80 transition-opacity disabled:opacity-50"
+				disabled={calibration_sending}
+				on:click={retry_recovery}
+			>
+				Check again
+			</button>
+		</div>
+	{:else if upload_block === 'unknown-opcode'}
+		<!-- Amber, not red: the logger is actively fixing this and it usually
+		     succeeds, so an alarm state would be a lie. Red is kept for the
+		     exhausted branch above, which is the only real dead end. -->
+		<div
+			class="w-full rounded-lg border border-status-warn/50 bg-status-warn/10 p-3 text-caption text-status-warn leading-relaxed"
+		>
+			New server type (packet <b>{dominant_opcode}</b>). Calibrating it now, which usually takes under
+			a minute. Your war is safe while this runs.
+			<span class="block mt-1 opacity-80">
+				{recovery_state === 'calibrating'
+					? 'Sending this session to CoGM.'
+					: recovery_state === 'waiting'
+						? 'Waiting for CoGM to finish calibrating.'
+						: 'Checking for an existing calibration.'}
+			</span>
 		</div>
 	{/if}
 	<!-- Name order: set which captured column is the Killer, Victim, and Guild

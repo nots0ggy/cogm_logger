@@ -3,7 +3,10 @@
 	import { onMount } from 'svelte';
 	import { kill_logger_process } from '../logic/logger-wrapper';
 	import { get_config } from '../components/create-config/config';
-	import { init_remote_registry } from '../components/create-config/packet-registry';
+	import {
+		init_remote_registry,
+		refresh_remote_registry
+	} from '../components/create-config/packet-registry';
 	import '../app.css';
 	import Modal from '../svelte-ui/modal/modal.svelte';
 	import { Toaster } from 'svelte-french-toast';
@@ -13,6 +16,14 @@
 
 	let is_ready = false;
 
+	// The app stays open for days, while a war is recorded in a single sitting.
+	// Pulling the packet table only at launch meant a calibration published
+	// during a session could not reach the person it was published for — they
+	// were told to restart at the one moment they could not. Re-pull on this
+	// cadence instead; the payload is a few hundred bytes.
+	const REGISTRY_REFRESH_MS = 10 * 60 * 1000;
+	let registry_timer: ReturnType<typeof setInterval> | null = null;
+
 	onMount(() => {
 		init();
 		events.on('ready', () => {
@@ -21,7 +32,13 @@
 			// (cached for offline use; the compiled table is the fallback). Never
 			// blocks the UI and never throws.
 			get_config()
-				.then((cfg) => init_remote_registry(cfg.cogm_url || 'https://cogm.app'))
+				.then(async (cfg) => {
+					const url = cfg.cogm_url || 'https://cogm.app';
+					await init_remote_registry(url);
+					registry_timer = setInterval(() => {
+						refresh_remote_registry(url).catch(() => {});
+					}, REGISTRY_REFRESH_MS);
+				})
 				.catch(() => {});
 		});
 		events.on('windowClose', async () => {
@@ -30,6 +47,9 @@
 			await kill_logger_process();
 			await app.exit();
 		});
+		return () => {
+			if (registry_timer) clearInterval(registry_timer);
+		};
 	});
 
 	let container: HTMLElement;

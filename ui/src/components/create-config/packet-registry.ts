@@ -22,6 +22,7 @@
 //               (subject died); the low nibble is char `kill`, so
 //               hexdump[kill] === '1' means the subject got the kill.
 import { storage } from '@neutralinojs/lib';
+import { writable } from 'svelte/store';
 import type { LogType } from './config';
 
 export type PacketConfig = {
@@ -56,13 +57,32 @@ export const KNOWN_PACKETS: Record<string, PacketConfig> = {
 
 // ── Remote registry ─────────────────────────────────────────────────────────
 // cogm.app serves the same table at /api/logger/packet-registry so a new-patch
-// calibration reaches installed loggers on next launch, without a release.
+// calibration reaches installed loggers WITHOUT a release.
 // Remote entries take precedence over the compiled table; the compiled table
 // is the offline fallback, and the last successful fetch is cached in
 // Neutralino storage so an offline launch still gets the newest known table.
+//
+// THE TABLE IS RE-FETCHED, NOT SNAPSHOT AT LAUNCH. It used to be read exactly
+// once on 'ready', which quietly made every calibration useless to anyone
+// already running the app: on 2026-07-30 opcode 6f0100000f was calibrated
+// server-side at 00:34, and three guilds still lost their wars that night
+// because their loggers held a snapshot taken before that and told them to
+// restart. A war is recorded in one sitting, so "restart and reopen" is asked
+// at the exact moment the user cannot do it. Refreshing on demand costs one
+// small GET and removes that whole failure class.
 
 const REGISTRY_CACHE_KEY = 'packet_registry_cache';
 let remote_packets: Record<string, PacketConfig> | null = null;
+
+/**
+ * Bumped on every refresh that CHANGES the table.
+ *
+ * `remote_packets` is a module-level variable, so Svelte cannot see it move —
+ * a component that computed "this opcode is unknown" would keep saying so
+ * forever after a refresh made it known. Reactive consumers subscribe to this
+ * instead, which is what turns a live calibration into a live unblock.
+ */
+export const registry_version = writable(0);
 
 function valid_packet_config(v: unknown): v is PacketConfig {
 	if (typeof v !== 'object' || v === null) return false;
@@ -87,37 +107,100 @@ function sanitize_registry(raw: unknown): Record<string, PacketConfig> | null {
 }
 
 /**
+ * A stable identity for a table, so a refresh that returns the same entries
+ * does not look like a change and spam reactive consumers. Key order from JSON
+ * is not guaranteed, hence the sort.
+ */
+function registry_fingerprint(packets: Record<string, PacketConfig> | null): string {
+	if (!packets) return '';
+	return Object.keys(packets)
+		.sort()
+		.map((id) => {
+			const { name_order: n, kill } = packets[id];
+			return `${id}:${n.killer},${n.victim},${n.guild},${kill}`;
+		})
+		.join('|');
+}
+
+/** GET the table. Returns null on any failure; never throws. */
+async function fetch_remote(cogm_url: string): Promise<Record<string, PacketConfig> | null> {
+	try {
+		const res = await fetch(`${cogm_url.replace(/\/$/, '')}/api/logger/packet-registry`, {
+			// Without this the webview can satisfy a refresh from its own cache and
+			// hand back the very snapshot we are refreshing to escape.
+			cache: 'no-store'
+		});
+		if (!res.ok) return null;
+		const body = await res.json();
+		return sanitize_registry(body?.packets);
+	} catch {
+		return null;
+	}
+}
+
+/** Swap the table in. Returns whether anything actually changed. */
+function apply_registry(packets: Record<string, PacketConfig> | null): boolean {
+	if (registry_fingerprint(packets) === registry_fingerprint(remote_packets)) return false;
+	remote_packets = packets;
+	registry_version.update((n) => n + 1);
+	return true;
+}
+
+/**
  * Fetch the calibrated registry from cogm.app and cache it. Never throws:
  * on any failure it falls back to the cached copy, and failing that the
  * compiled table stays in effect. Call once at app start.
  */
 export async function init_remote_registry(cogm_url: string): Promise<void> {
-	try {
-		const res = await fetch(`${cogm_url.replace(/\/$/, '')}/api/logger/packet-registry`);
-		if (res.ok) {
-			const body = await res.json();
-			const packets = sanitize_registry(body?.packets);
-			if (packets) {
-				remote_packets = packets;
-				await storage.setData(REGISTRY_CACHE_KEY, JSON.stringify(packets)).catch(() => {});
-				return;
-			}
-		}
-	} catch {
-		/* offline or server hiccup — fall through to cache */
+	const fresh = await fetch_remote(cogm_url);
+	if (fresh) {
+		apply_registry(fresh);
+		await storage.setData(REGISTRY_CACHE_KEY, JSON.stringify(fresh)).catch(() => {});
+		return;
 	}
 	try {
 		const cached = await storage.getData(REGISTRY_CACHE_KEY);
 		const packets = sanitize_registry(JSON.parse(cached));
-		if (packets) remote_packets = packets;
+		if (packets) apply_registry(packets);
 	} catch {
 		/* no cache — compiled table stays in effect */
 	}
 }
 
+/**
+ * Re-fetch the table mid-session. Returns true when the table CHANGED, which
+ * is the caller's signal that an opcode blocked a moment ago may now decode.
+ *
+ * Network-only on purpose: falling back to the on-disk cache here would return
+ * the same stale table we are trying to get past, and report "no change" when
+ * the truth is "could not reach the server".
+ */
+export async function refresh_remote_registry(cogm_url: string): Promise<boolean> {
+	const fresh = await fetch_remote(cogm_url);
+	if (!fresh) return false;
+	const changed = apply_registry(fresh);
+	if (changed) await storage.setData(REGISTRY_CACHE_KEY, JSON.stringify(fresh)).catch(() => {});
+	return changed;
+}
+
 /** The decode config for an opcode, or null when it isn't calibrated yet. */
 export function lookup_packet(identifier: string): PacketConfig | null {
 	return remote_packets?.[identifier] ?? KNOWN_PACKETS[identifier] ?? null;
+}
+
+/**
+ * Reactive-safe "we cannot decode this opcode" test.
+ *
+ * Takes the registry version purely so a Svelte `$:` statement has a dependency
+ * it can actually see: the table lives in module scope, which Svelte cannot
+ * observe, so without this a war judged uncalibrated stays judged that way even
+ * after a refresh made it decodable.
+ */
+export function is_uncalibrated(identifier: string | null, registry_version: number): boolean {
+	// Referenced so the argument is not "unused" to the type checker; the value
+	// itself carries no meaning beyond "the table may have moved".
+	void registry_version;
+	return identifier != null && !lookup_packet(identifier);
 }
 
 /** Every calibrated opcode (remote merged over compiled). */
