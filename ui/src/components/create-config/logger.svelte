@@ -716,18 +716,24 @@
 	// opcode decodable, which is precisely the stale-snapshot bug this replaces.
 	$: unknown_opcode = is_uncalibrated(dominant_opcode, $registry_version);
 
-	// Layer 1 upload guard: refuse to push a war we can't decode safely instead
-	// of shipping a scrambled recap to CoGM. Two unrecoverable failure modes:
-	//   'unknown-opcode' — a server type the registry hasn't been calibrated for.
-	//   'one-sided'      — kd_sanity: 0 kills or 0 deaths => kill direction wrong.
-	// unknown-opcode is checked FIRST: an uncalibrated server almost always ALSO
-	// decodes one-sided, but the fix there is "save and send to support", not
-	// "adjust the name order", so the more specific reason must win.
-	// Save stays enabled so the raw session can still be preserved and sent in.
-	// kd_override: a genuine stomp CAN end 0 on one side, so the one-sided
-	// guard is confirmable — the banner offers an explicit "this is a real
-	// blowout" override. The unknown-opcode guard has no override: decoding an
-	// uncalibrated packet is a guess no confirmation can fix.
+	// Upload guard: 'one-sided' only.
+	//
+	// An uncalibrated opcode NO LONGER BLOCKS. It used to, and the reasoning was
+	// sound in isolation — decoding an unknown layout is a guess, so do not ship a
+	// scrambled recap. In practice it meant a guild fought a two-hour node war,
+	// hit a wall at the end, and got nothing at all, while CoGM sat on the raw
+	// session that could have answered the question. Three guilds lost wars that
+	// way in 24 hours, all on an opcode that was already calibrated server-side.
+	//
+	// The war now uploads in full and the server flags it as an unverified decode
+	// (GuildPvpEvent.decodeIssue). That is recoverable in a way the old dead end
+	// was not: every upload stores its raw session, so once the opcode is
+	// calibrated the war re-decodes in place and the flag clears. Provisional
+	// numbers with a caveat beat no numbers at all.
+	//
+	// 'one-sided' stays a guard because it is CONFIRMABLE — a genuine stomp really
+	// can end 0 on one side, so the banner offers an explicit override. That is a
+	// question the user can answer; "is this packet layout correct" is not.
 	let kd_override = false;
 	// Guards the once-per-opcode auto-calibration submit below.
 	let calibration_sent_for: string | null = null;
@@ -743,7 +749,10 @@
 		recovery_for = null;
 		recovery_state = 'idle';
 	}
-	$: upload_block = unknown_opcode ? 'unknown-opcode' : kd_sanity && !kd_override ? 'one-sided' : null;
+	$: upload_block = kd_sanity && !kd_override ? 'one-sided' : null;
+	// Shown, never blocking. True once recovery has genuinely run out of options,
+	// so a war that self-heals in the usual few seconds never nags about it.
+	$: upload_unverified = unknown_opcode && recovery_state === 'exhausted';
 
 	// ── Auto-calibration submit ────────────────────────────────────────────
 	// When the war is blocked on an uncalibrated opcode, the user can ship the
@@ -1072,10 +1081,11 @@
 		// Same hard stop as open_cogm_upload: never push an un-decodable war to an
 		// external site. Mirrors the disabled button; defends a non-button caller.
 		if (upload_block) {
+			// 'one-sided' is the only remaining block, and it is confirmable — the
+			// banner offers an override for a genuine stomp. An uncalibrated opcode
+			// no longer stops anything; it uploads flagged.
 			show_toast(
-				upload_block === 'unknown-opcode'
-					? 'This server type is still being calibrated. Give it a moment, the logger is handling it.'
-					: 'This war decoded one direction only, so the kill direction is wrong. Fix the Name order / kill column before uploading.',
+				'This war decoded one direction only, so the kill direction is wrong. Fix the Name order / kill column before uploading, or confirm it was a real one-sided stomp.',
 				'error'
 			);
 			return;
@@ -1216,10 +1226,11 @@
 		// Mirrors the disabled button below; defends the path if it's ever called
 		// some other way.
 		if (upload_block) {
+			// 'one-sided' is the only remaining block, and it is confirmable — the
+			// banner offers an override for a genuine stomp. An uncalibrated opcode
+			// no longer stops anything; it uploads flagged.
 			show_toast(
-				upload_block === 'unknown-opcode'
-					? 'This server type is still being calibrated. Give it a moment, the logger is handling it.'
-					: 'This war decoded one direction only, so the kill direction is wrong. Fix the Name order / kill column before uploading.',
+				'This war decoded one direction only, so the kill direction is wrong. Fix the Name order / kill column before uploading, or confirm it was a real one-sided stomp.',
 				'error'
 			);
 			return;
@@ -1239,10 +1250,15 @@
 </script>
 
 <div class="flex flex-col gap-2 items-center w-full flex-1 min-h-0 relative">
-	<!-- Layer 1 upload guard: block the CoGM upload (button below) and tell the
-	     user why, so a war the logger can't decode never reaches CoGM as a
-	     scrambled recap. Two cases: a one-sided decode (wrong kill direction) and
-	     an uncalibrated server opcode. Save stays available to preserve the data. -->
+	<!-- Three states, only the first of which blocks the upload:
+	       'one-sided'  — kill direction looks wrong. Blocks, but the user can
+	                      override it, because a genuine stomp really can end 0
+	                      on one side and only they know which it was.
+	       unverified   — uncalibrated packet layout, recovery exhausted. Uploads
+	                      anyway; the server tags the war and we correct it.
+	       recovering   — calibration in flight. Uploads anyway.
+	     An uncalibrated opcode used to block here. It stranded three guilds on a
+	     layout CoGM had already calibrated, so the war now goes up either way. -->
 	{#if upload_block === 'one-sided'}
 		<div
 			class="w-full rounded-lg border border-status-error/50 bg-status-error/10 p-3 text-caption text-status-error leading-relaxed"
@@ -1257,13 +1273,22 @@
 				This was a real one-sided stomp — allow the upload
 			</button>
 		</div>
-	{:else if upload_block === 'unknown-opcode' && recovery_state === 'exhausted'}
+	{:else if upload_unverified}
+		<!-- Amber, and Upload stays ENABLED. This is the branch that used to be a
+		     red dead end with the button disabled, which sent guilds away from a
+		     finished war with nothing. They get the war; we get a flag and their
+		     warscore; the numbers get corrected once the layout is calibrated. -->
 		<div
-			class="w-full rounded-lg border border-status-error/50 bg-status-error/10 p-3 text-caption text-status-error leading-relaxed"
+			class="w-full rounded-lg border border-status-warn/50 bg-status-warn/10 p-3 text-caption text-status-warn leading-relaxed"
 		>
-			We have not calibrated this server type yet (packet <b>{dominant_opcode}</b>) and CoGM could not
-			work it out on its own. Your session has been sent to us, and Save keeps a copy on your machine.
-			We will add this server and you can upload the war then.
+			We have not calibrated this server type yet (packet <b>{dominant_opcode}</b>), so the kill
+			direction and columns in this war are our best guess. <b>Upload it anyway</b> — everything is
+			saved, we have your session, and we tag the war so we can correct the numbers once this server
+			is calibrated.
+			<span class="block mt-1 opacity-90">
+				It helps if you upload your in-game warscore screenshot on the war's page afterwards. That
+				gives us the real kills and deaths to check against.
+			</span>
 			<button
 				class="block mt-2 text-xs font-semibold underline underline-offset-2 hover:opacity-80 transition-opacity disabled:opacity-50"
 				disabled={calibration_sending}
@@ -1272,15 +1297,14 @@
 				Check again
 			</button>
 		</div>
-	{:else if upload_block === 'unknown-opcode'}
-		<!-- Amber, not red: the logger is actively fixing this and it usually
-		     succeeds, so an alarm state would be a lie. Red is kept for the
-		     exhausted branch above, which is the only real dead end. -->
+	{:else if unknown_opcode}
+		<!-- Recovery in flight. Also non-blocking: uploading right now is allowed,
+		     it just means the war lands flagged instead of clean. -->
 		<div
 			class="w-full rounded-lg border border-status-warn/50 bg-status-warn/10 p-3 text-caption text-status-warn leading-relaxed"
 		>
 			New server type (packet <b>{dominant_opcode}</b>). Calibrating it now, which usually takes under
-			a minute. Your war is safe while this runs.
+			a minute. Waiting means cleaner numbers; uploading now still works and we correct it later.
 			<span class="block mt-1 opacity-80">
 				{recovery_state === 'calibrating'
 					? 'Sending this session to CoGM.'
