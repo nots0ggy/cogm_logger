@@ -224,8 +224,19 @@
 				config = await update_config({ ...config, cogm_token, cogm_url, cogm_guild });
 				show_toast(msg, 'error');
 			}
-		} catch {
-			show_toast('Could not reach CoGM', 'error');
+		} catch (e) {
+			// Distinguish "the network failed" from "we could not save your token".
+			// They were the same message, which is how a Program Files install that
+			// could not write its config looked exactly like an outage.
+			const msg = String((e as Error)?.message ?? e);
+			if (/writeFile|permission|denied|EACCES|EPERM|directory/i.test(msg)) {
+				show_toast(
+					'Token verified but could not be saved. CoGM Logger cannot write its settings file.',
+					'error',
+				);
+			} else {
+				show_toast(`Could not reach ${cogm_url || 'https://cogm.app'}`, 'error');
+			}
 		} finally {
 			verifying = false;
 		}

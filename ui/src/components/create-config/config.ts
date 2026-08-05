@@ -1,4 +1,36 @@
-import { clipboard, storage } from '@neutralinojs/lib';
+import { clipboard, filesystem, os, storage } from '@neutralinojs/lib';
+
+/**
+ * Where the config actually lives.
+ *
+ * Neutralino's `storage` API writes a `.storage` folder NEXT TO THE BINARY. The
+ * installer puts us in `{autopf}\CoGM Logger` (Program Files), which a normal
+ * user process cannot write to, so every `storage.setData` silently failed and
+ * the CoGM token never persisted. Portable builds worked because the exe sits
+ * somewhere writable. That is the whole reason "installer doesn't take the
+ * token" — install succeeds because it runs elevated, and only later writes,
+ * as a normal user, fail.
+ *
+ * So config now lives under the OS data directory (%APPDATA% on Windows), which
+ * is writable regardless of where the binary was installed and survives
+ * upgrades and uninstalls.
+ */
+const CONFIG_FILENAME = 'config.json';
+
+async function config_dir(): Promise<string> {
+  const base = await os.getPath('data');
+  const dir = `${base}/CoGM Logger`;
+  try {
+    await filesystem.createDirectory(dir);
+  } catch {
+    // Already exists. createDirectory throws rather than being idempotent.
+  }
+  return dir;
+}
+
+async function config_path(): Promise<string> {
+  return `${await config_dir()}/${CONFIG_FILENAME}`;
+}
 
 export type Config = {
 	patch: string;
@@ -87,12 +119,44 @@ export async function update_config(config: Config) {
 } */
 
 export async function update_config(config: Config) {
-	await storage.setData('config', JSON.stringify(config));
+	// Throws on failure rather than swallowing. A config that cannot be written
+	// is the bug that produced a token which appeared to save and then vanished;
+	// the caller shows the user an error instead of carrying on regardless.
+	await filesystem.writeFile(await config_path(), JSON.stringify(config, null, 2));
 	return config;
 }
 
+/**
+ * Read the config, migrating a pre-existing one out of Neutralino storage.
+ *
+ * Portable users have a working config in the old location. Read it once, write
+ * it to the new path, and keep going, so upgrading does not log anyone out.
+ */
+async function read_raw_config(): Promise<string | null> {
+	try {
+		return await filesystem.readFile(await config_path());
+	} catch {
+		// Not migrated yet (or genuinely absent).
+	}
+	try {
+		const legacy = await storage.getData('config');
+		if (legacy) {
+			try {
+				await filesystem.writeFile(await config_path(), legacy);
+			} catch {
+				// Migration write failed; still return the legacy value so the app
+				// works this session rather than presenting an empty config.
+			}
+			return legacy;
+		}
+	} catch {
+		// No legacy config either.
+	}
+	return null;
+}
+
 export async function get_config(): Promise<Config> {
-	const config = await storage.getData('config').catch((e) => console.error(e));
+	const config = await read_raw_config();
 	if (config) {
 		const parsed: Config = JSON.parse(config);
 		if (parsed.include_characters === undefined) {
