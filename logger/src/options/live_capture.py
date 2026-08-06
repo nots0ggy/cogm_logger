@@ -411,6 +411,11 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
     global _log_file, _pcap_writer, _pcap_count, _locked_ips, _lock_counts
     global _pcap_queue, _pcap_thread, _pcap_dropped, _pcap_bytes, _pcap_capped
     global _diag_file, _diag_counts, _diag_samples, _diag_candidates
+    # _packets_seen is incremented by package_handler on the module. Without it
+    # declared here the assignment below binds a local, the "did this interface
+    # deliver anything" check always reads 0, and a capture that worked is
+    # reported as a dead driver.
+    global _packets_seen
     try:
         print("Reading Network...", flush=True)
         # Fresh server lock per session (see _locked_ips above).

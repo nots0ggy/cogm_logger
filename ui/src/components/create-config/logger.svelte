@@ -109,6 +109,17 @@
 	// The calibrated opcode whose column roles + kill offset we've pinned this
 	// session, so we apply the registry once and never fight a later manual edit.
 	let registry_applied: string | null = null;
+	// Auto-detect is a shape heuristic; the registry map is validated against a
+	// full warscore board. Replaying six real sessions, the heuristic replaced
+	// the calibrated killer FAMILY column with the opposing player's CHARACTER
+	// column in all six. The button stays (a provisional registry row ships with
+	// its direction unconfirmed, so an officer has to be able to correct one)
+	// but it takes a second click to discard a calibrated map.
+	let override_armed = false;
+	let override_timer: ReturnType<typeof setTimeout> | null = null;
+	// Set once the officer has replaced a calibrated order, so the panel can say
+	// so instead of silently downgrading its own confidence badge.
+	let registry_overridden = false;
 
 	onMount(async () => {
 		config = await get_config();
@@ -175,9 +186,24 @@
 		});
 	}
 
+	// Plain object so bumping it never re-triggers the reactive block below.
+	const registry_seen = { version: -1 };
+
 	$: {
+		// $registry_version is a dependency, not an argument. The decode used to
+		// re-run only when `logs` changed, so a registry landing after a war ended
+		// (the recovery poll, or the "Check again" button) cleared the amber
+		// "not calibrated" banner and, on the poll path, announced the war was
+		// ready to upload while the columns and kill offset were still the
+		// heuristic guess. The reassuring message was the only thing that changed.
+		// Re-resolving on a registry bump makes the banner tell the truth.
+		//
+		// Only a genuine bump forces it. The growth-based tick schedule in
+		// logs_changed is deliberate and unchanged for the live-capture path.
+		const registry_moved = $registry_version !== registry_seen.version;
+		registry_seen.version = $registry_version;
 		if (logs.length > 0) {
-			logs_changed();
+			logs_changed(registry_moved);
 		} else {
 			scroll(true);
 		}
@@ -220,7 +246,7 @@
 		auto_detect();
 	}
 
-	function logs_changed() {
+	function logs_changed(force = false) {
 		auto_scroll && setTimeout(scroll);
 
 		// The last clause covers bulk-loaded sessions (recover/open): logs
@@ -229,6 +255,7 @@
 		// get_name(3/4) throw on export. In the live record flow the offsets
 		// are fully built during the 1..49 growth, so this clause is false then.
 		if (
+			force ||
 			logs.length < 50 ||
 			logs.length % 100 === 0 ||
 			possible_name_offsets.length < (logs[0]?.names.length ?? 0)
@@ -452,10 +479,20 @@
 		const clean = dominant ? logs.filter((l) => l.identifier === dominant) : logs;
 		const sample = clean.length > 0 ? clean : logs;
 
-		if (is_binary_flag(sample, DEFAULT_KILL_OFFSET, false)) return [DEFAULT_KILL_OFFSET];
+		// Demand both values here too. Without it a byte that reads 0x00 in every
+		// record satisfies "is a 0/1 byte" and wins, and a constant carries no
+		// direction. Measured on a real session: the byte at 15 is constant zero
+		// for the first 539 of 1129 kills, so the live feed read 0K/539D while
+		// the true flag at 141 read 255K/195D. Upstream has no default-offset
+		// shortcut at all and got that session right, which is the one place it
+		// was genuinely more accurate than us.
+		if (is_binary_flag(sample, DEFAULT_KILL_OFFSET, true)) return [DEFAULT_KILL_OFFSET];
 		const structural = structural_kill_offset(sample);
 		if (structural.length) return score_kill_offsets(sample, structural);
-		return find_kill_offset(sample);
+		// Never hand back an empty list: every consumer indexes this array, and
+		// log.hex[undefined] is undefined, which renders the whole war as deaths.
+		const heuristic = find_kill_offset(sample);
+		return heuristic.length ? heuristic : [DEFAULT_KILL_OFFSET];
 	}
 
 	/**
@@ -569,8 +606,32 @@
 	// back to the offline heuristic (guild = most repeated; players = two most
 	// distinct; your family name pins the subject column). The result only sets
 	// the indices, which stay fully editable. Wrapped so it can never crash.
+	//
+	// request_auto_detect is the button's entry point; auto_detect below is the
+	// detection itself and is also called automatically on the roster path.
+
+	// Replacing a calibrated order is a real thing an officer sometimes has to do,
+	// so this does not block it; it just stops it happening on one click, which is
+	// how a warscore-validated map was getting thrown away silently while the
+	// kill-direction flag (whose meaning is defined relative to the registry's
+	// killer column) stayed put and inverted the war.
+	function request_auto_detect() {
+		if (detect_source === 'registry' && !override_armed) {
+			override_armed = true;
+			if (override_timer) clearTimeout(override_timer);
+			override_timer = setTimeout(() => (override_armed = false), 6000);
+			show_toast('This server is already calibrated. Click again to replace that name order.', 'error');
+			return;
+		}
+		if (override_timer) clearTimeout(override_timer);
+		override_armed = false;
+		auto_detect(true);
+	}
+
 	function auto_detect(manual = false) {
 		try {
+			// Read before the branches below reassign it to 'roster' / 'guess'.
+			const was_registry = detect_source === 'registry';
 			const numCols = possible_name_offsets.length;
 			if (numCols < 3 || logs.length === 0) return;
 
@@ -673,6 +734,7 @@
 				detect_source = 'guess';
 			}
 
+			if (was_registry) registry_overridden = true;
 			player_one_index = p1;
 			player_two_index = p2;
 			guild_index = g;
@@ -810,7 +872,13 @@
 	let calibration_sent_for: string | null = null;
 	// Automatic block recovery (see recover_unknown_opcode). One attempt per
 	// opcode per session.
-	let recovery_state: 'idle' | 'refreshing' | 'calibrating' | 'waiting' | 'exhausted' = 'idle';
+	let recovery_state:
+		| 'idle'
+		| 'refreshing'
+		| 'sampling'
+		| 'calibrating'
+		| 'waiting'
+		| 'exhausted' = 'idle';
 	let recovery_for: string | null = null;
 	// A cleared session (new recording / different file) must not inherit a
 	// previous war's override or calibration-sent guard.
@@ -910,6 +978,17 @@
 	// then their raw session is already with us and the war is recoverable.
 	const RECOVERY_POLLS = 6;
 	const RECOVERY_POLL_MS = 10_000;
+	// The server cannot reach "high" confidence below 40 records, and it only
+	// auto-applies a layout at high confidence plus agreement from a second
+	// guild. This submit is once per opcode, so firing it at the first kill spent
+	// the only slot on a 1-to-5-record session: every guild's logger sent a
+	// useless sample, none could reach high, consensus never formed, and no live
+	// war could calibrate its own opcode. Measured on nine real sessions, a war
+	// reaches 40 kills in 48-246s (one outlier at 1072s), so waiting costs a
+	// couple of minutes and buys the only submission that can actually work.
+	const CALIBRATION_MIN_RECORDS = 40;
+	const CALIBRATION_SAMPLE_WAIT_MS = 20 * 60 * 1000;
+	const CALIBRATION_SAMPLE_POLL_MS = 3_000;
 
 	async function recover_unknown_opcode(opcode: string) {
 		// Set before the first await so a burst of reactive updates cannot start
@@ -940,7 +1019,28 @@
 			return;
 		}
 
-		// 2 — hand over the evidence.
+		// 2 — hand over the evidence, once there is evidence worth handing over.
+		// A war that ends below the bar still submits what it has: a 'review' row
+		// on the server is worse than a high-confidence one but far better than
+		// nothing, and it is what lets an operator calibrate the opcode by hand.
+		recovery_state = 'sampling';
+		const sample_deadline = Date.now() + CALIBRATION_SAMPLE_WAIT_MS;
+		let next_refresh_at = Date.now() + RECOVERY_POLL_MS;
+		while (logs.length < CALIBRATION_MIN_RECORDS && Date.now() < sample_deadline) {
+			await new Promise((resolve) => setTimeout(resolve, CALIBRATION_SAMPLE_POLL_MS));
+			// Another guild on the same patch may calibrate it while we wait, which
+			// is the whole point of a shared registry. Re-pull on step 3's cadence
+			// rather than on every sample tick.
+			if (Date.now() >= next_refresh_at) {
+				next_refresh_at = Date.now() + RECOVERY_POLL_MS;
+				await refresh_remote_registry(url).catch(() => false);
+				if (lookup_packet(opcode)) {
+					recovery_state = 'idle';
+					return;
+				}
+			}
+		}
+
 		recovery_state = 'calibrating';
 		await send_calibration(opcode);
 		if (lookup_packet(opcode)) {
@@ -966,10 +1066,15 @@
 		recover_unknown_opcode(dominant_opcode);
 	}
 
-	/** Clear the once-per-opcode guard so the reactive trigger runs again. */
+	/** Clear the once-per-opcode guards so the reactive trigger runs again. */
 	function retry_recovery() {
 		recovery_for = null;
 		recovery_state = 'idle';
+		// Also clear the submit guard. Without this, a session that submitted a
+		// short sample could never send a fuller one: this button was the only
+		// remaining path and it left calibration_sent_for set, so step 2 became a
+		// no-op forever and the opcode stayed uncalibrated for that guild.
+		calibration_sent_for = null;
 	}
 
 	// ── Kill-location coords for the CoGM heatmap ──────────────────────────
@@ -1377,11 +1482,13 @@
 			New server type (packet <b>{dominant_opcode}</b>). Calibrating it now, which usually takes under
 			a minute. Waiting means cleaner numbers; uploading now still works and we correct it later.
 			<span class="block mt-1 opacity-80">
-				{recovery_state === 'calibrating'
-					? 'Sending this session to CoGM.'
-					: recovery_state === 'waiting'
-						? 'Waiting for CoGM to finish calibrating.'
-						: 'Checking for an existing calibration.'}
+				{recovery_state === 'sampling'
+					? `Collecting kills to calibrate from (${logs.length} of ${CALIBRATION_MIN_RECORDS}).`
+					: recovery_state === 'calibrating'
+						? 'Sending this session to CoGM.'
+						: recovery_state === 'waiting'
+							? 'Waiting for CoGM to finish calibrating.'
+							: 'Checking for an existing calibration.'}
 			</span>
 		</div>
 	{/if}
@@ -1394,17 +1501,26 @@
 				<span class="heading-h2">Name order</span>
 				<button
 					class="flex items-center gap-2 text-xs font-semibold text-gold border border-gold/40 bg-gold/10 rounded-md px-3 py-1.5 hover:bg-gold/20 transition-colors"
-					on:click={() => auto_detect(true)}
+					on:click={request_auto_detect}
 				>
-					{cogm_roster?.configured
-						? detect_source === 'roster'
-							? 'Re-detect'
-							: 'Auto-detect'
-						: `Auto-detect${personal_family_name ? ` from "${personal_family_name}"` : ''}`}
+					{override_armed
+						? 'Confirm override'
+						: detect_source === 'registry'
+							? 'Override calibrated order'
+							: cogm_roster?.configured
+								? detect_source === 'roster'
+									? 'Re-detect'
+									: 'Auto-detect'
+								: `Auto-detect${personal_family_name ? ` from "${personal_family_name}"` : ''}`}
 				</button>
 			</div>
 			{#if detect_source === 'registry'}
 				<p class="text-caption text-status-ok">Calibrated for this game version — order and kill direction set automatically.</p>
+			{:else if registry_overridden}
+				<p class="text-caption text-status-error">
+					You replaced the calibrated name order for this server. The kill direction is still the
+					calibrated one, so if the preview below reads backwards, swap Killer and Victim.
+				</p>
 			{:else if detect_source === 'roster'}
 				<p class="text-caption text-status-ok">Matched to your CoGM roster.</p>
 			{:else if detect_source === 'manual'}
