@@ -1,4 +1,6 @@
 import os
+import queue
+import threading
 import re
 import sys
 from scapy.all import sniff, rdpcap, get_if_list
@@ -55,6 +57,35 @@ _log_file = None
 # A single long-lived writer avoids the per-packet open+append that lagged the
 # sniff thread and dropped packets at war rates. None when not recording.
 _pcap_writer = None
+# Packets waiting to be written to the pcap, drained by a background thread.
+#
+# The write used to happen inline in package_handler, which IS scapy's prn and
+# runs on the single capture thread. PcapWriter.write() calls raw(pkt) and
+# rebuilds the whole dissected packet: measured at 42.8 us/packet against
+# 1.5 us for the hex extraction that is the entire rest of the job, so the
+# capture thread did 5.5x the work per war-server packet. That cost lands in
+# both directions once the server lock is acquired, which is minutes into every
+# war, and it is worst in the biggest fights — precisely when kills matter and
+# precisely when officers compare their board against someone running ikusa.
+#
+# Bounded on purpose. If the disk cannot keep up the pcap loses packets, which
+# is a research nicety; the capture thread must never block, because that loses
+# KILLS. dropped_pcap_packets is reported once at the end rather than per
+# packet: the old per-packet print on a full disk flooded stdout, which the UI
+# reads line by line, and the backpressure stalled the sniffer it was meant to
+# be warning about.
+_pcap_queue = None
+_pcap_thread = None
+_pcap_dropped = 0
+# Hard ceiling on the always-on pcap. It stays always-on because the raw bytes
+# are what let us recalibrate an opcode after a BDO patch (that is how the
+# 6b -> 640 kill-offset break was recovered), but a busy 2h war writes ~600
+# bytes per packet continuously and can reach several GB. Past the cap we stop
+# recording and say so once: the first slice of a war is enough to recalibrate,
+# and filling a user's disk mid-war is a far worse outcome.
+_PCAP_MAX_BYTES = 512 * 1024 * 1024
+_pcap_bytes = 0
+_pcap_capped = False
 _pcap_count = 0
 
 # Diagnostic sidecar for "0 logs" reports. package_handler tallies how many names
@@ -69,6 +100,13 @@ _diag_file = None
 _diag_counts = {}       # names_count -> candidates that yielded it
 _diag_samples = 0       # near-miss sample lines written (capped)
 _diag_candidates = 0    # total candidates seen this session
+
+# Packets this attempt actually delivered. sniff() blocks for the whole session
+# and the UI stops capture by KILLING the process, so a normal return means the
+# attempt never bound to anything rather than that the user stopped. Counting
+# packets is what lets the interface loop tell those apart instead of treating a
+# silent no-op as a successful capture.
+_packets_seen = 0
 _DIAG_SAMPLE_CAP = 300
 _DIAG_SUMMARY_EVERY = 500
 
@@ -133,7 +171,9 @@ def _diag_record(names_count, names, hexstr, package):
 
 
 def package_handler(package, output, ip_filter=True, record_pcap_path=None):
-    global last_payload, _pcap_writer, _pcap_count
+    global last_payload, _pcap_writer, _pcap_count, _packets_seen, _pcap_dropped
+
+    _packets_seen += 1
 
     if "IP" not in package:
         return
@@ -161,20 +201,20 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
         # unrelated traffic. Goes through the single long-lived _pcap_writer
         # (opened in start_sniff) instead of a per-packet open+append, which
         # lagged the sniff thread and dropped packets at war rates.
-        if _pcap_writer is not None:
+        if _pcap_writer is not None and _pcap_queue is not None:
             record_this = (
                 (package_src in _locked_ips or package_dst in _locked_ips)
                 if locked
                 else re.search(identifier_regex, payload) is not None
             )
             if record_this:
+                # Never blocks. A full queue means the writer is behind, and
+                # dropping a pcap packet is strictly better than stalling the
+                # capture thread and dropping a kill.
                 try:
-                    _pcap_writer.write(package)
-                    _pcap_count += 1
-                    if _pcap_count % 100 == 0:
-                        _pcap_writer.flush()
-                except Exception as exc:
-                    print(f"pcap write failed: {exc}", flush=True)
+                    _pcap_queue.put_nowait(package)
+                except Exception:
+                    _pcap_dropped += 1
 
         # IP-filter parse gate: skip payloads from hosts that are not a locked
         # war server unless they carry the kill-packet identifier themselves.
@@ -336,8 +376,40 @@ def read_network_interfaces():
         return {iface: iface for iface in get_if_list()}
 
 
+def _pcap_worker():
+    """Drain the pcap queue onto disk. Runs off the capture thread on purpose."""
+    global _pcap_count, _pcap_bytes, _pcap_capped
+    while True:
+        package = _pcap_queue.get()
+        if package is None:  # shutdown sentinel
+            break
+        if _pcap_capped:
+            continue
+        try:
+            _pcap_bytes += len(package)
+            if _pcap_bytes > _PCAP_MAX_BYTES:
+                _pcap_capped = True
+                print(
+                    f"pcap: reached {_PCAP_MAX_BYTES // (1024 * 1024)}MB, stopping raw capture "
+                    "for this session. Kill logging continues normally.",
+                    flush=True,
+                )
+                continue
+            _pcap_writer.write(package)
+            _pcap_count += 1
+            if _pcap_count % 100 == 0:
+                _pcap_writer.flush()
+        except Exception:
+            # Swallow per-packet failures. A disk that has filled would
+            # otherwise print once per packet, and the UI reads stdout line by
+            # line, so the flood stalls the very capture this is meant to be
+            # protecting. The total is reported once at shutdown.
+            pass
+
+
 def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=None):
     global _log_file, _pcap_writer, _pcap_count, _locked_ips, _lock_counts
+    global _pcap_queue, _pcap_thread, _pcap_dropped, _pcap_bytes, _pcap_capped
     global _diag_file, _diag_counts, _diag_samples, _diag_candidates
     try:
         print("Reading Network...", flush=True)
@@ -360,8 +432,17 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
                     os.makedirs(pcap_dir, exist_ok=True)
                 _pcap_writer = PcapWriter(record_pcap_path, append=False, sync=False)
                 _pcap_count = 0
+                _pcap_dropped = 0
+                _pcap_bytes = 0
+                _pcap_capped = False
+                # ~2s of headroom at a heavy war rate. Big enough to absorb a
+                # disk hiccup, small enough to bound memory.
+                _pcap_queue = queue.Queue(maxsize=2000)
+                _pcap_thread = threading.Thread(target=_pcap_worker, daemon=True)
+                _pcap_thread.start()
             except Exception as pcap_err:
                 _pcap_writer = None
+                _pcap_queue = None
                 print(f"pcap capture unavailable: {pcap_err}", flush=True)
         # Open the durable recovery file before sniffing. makedirs because the
         # default output lives under logger/.tmp which may not exist yet.
@@ -391,18 +472,67 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
         except Exception as diag_err:
             _diag_file = None
             print(f"Diagnostic log unavailable: {diag_err}", flush=True)
-        guidToNameDict = read_network_interfaces()
-        intfList = get_if_list()
-        namesAllowedList = [guidToNameDict.get(e) for e in intfList]
-        namesAllowedList = list(filter(None, namesAllowedList))
+        # Interface selection, most-capable first, each falling back to the next.
+        #
+        # We used to do only the middle one: map every scapy interface id
+        # through read_network_interfaces() and pass the names that survived.
+        # Two ways that captures nothing. A GUID missing from the map is
+        # silently dropped from the list, and if scapy then cannot open what is
+        # left, sniff() raises and the whole session ends with "Error while
+        # reading network" and zero kills. Upstream fixed both in
+        # sch-28/ikusa_logger (0812dd3 "capture on all interfaces (Windows)" and
+        # 0bb3a48 "compatibility interface fallback"), which landed in the
+        # analyze.py we had already replaced, so we never picked them up. A user
+        # on such a machine gets a silent partial or empty log and concludes the
+        # logger is inaccurate.
+        #
+        # Order matters: raw get_if_list() first because it is what scapy itself
+        # expects and needs no lossy name mapping; the GUID map second for the
+        # Windows builds where the raw ids do not open; iface=None last, which
+        # lets scapy pick the default interface and is better than not capturing.
+        prn = lambda x: package_handler(x, output, ip_filter, record_pcap_path)
 
-        sniff(
-            filter="tcp",
-            prn=lambda x: package_handler(x, output, ip_filter, record_pcap_path),
-            store=0,
-            iface=namesAllowedList if len(
-                namesAllowedList) > 0 and all_interfaces else None,
-        )
+        attempts = []
+        if all_interfaces:
+            raw = get_if_list()
+            if raw:
+                attempts.append(("all interfaces", raw))
+            guidToNameDict = read_network_interfaces()
+            namesAllowedList = list(filter(None, (guidToNameDict.get(e) for e in raw)))
+            if namesAllowedList and namesAllowedList != raw:
+                attempts.append(("named interfaces", namesAllowedList))
+        attempts.append(("default interface", None))
+
+        last_error = None
+        captured = False
+        for label, iface in attempts:
+            try:
+                print(f"Capturing on {label}...", flush=True)
+                _packets_seen = 0
+                sniff(filter="tcp", prn=prn, store=0, iface=iface)
+                # sniff returned without raising. Because the UI kills this
+                # process to stop a capture, that is not a user stop: either the
+                # interface delivered nothing and scapy gave up, or it never
+                # bound. Only treat it as real if packets actually arrived,
+                # otherwise fall through and try the next option. Without this
+                # a silent no-op looks identical to a working capture and the
+                # war logs zero kills.
+                if _packets_seen > 0:
+                    captured = True
+                    break
+                print(f"{label} delivered no packets, trying the next option.", flush=True)
+            except Exception as sniff_err:
+                last_error = sniff_err
+                print(f"{label} capture failed: {sniff_err}", flush=True)
+
+        if not captured:
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError(
+                "No network interface delivered any packets. Check that the capture "
+                "driver (Npcap on Windows) is installed and that the logger is running "
+                "as administrator."
+            )
     except Exception as e:
         # Keep the legacy line for older status parsing, and add the
         # classified CAPTURE_ERROR line the UI uses for actionable guidance.
@@ -416,6 +546,20 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
             except Exception:
                 pass
             _log_file = None
+        if _pcap_queue is not None and _pcap_thread is not None:
+            try:
+                _pcap_queue.put_nowait(None)  # sentinel
+                _pcap_thread.join(timeout=5)
+            except Exception:
+                pass
+            if _pcap_dropped:
+                print(
+                    f"pcap: dropped {_pcap_dropped} packets (disk could not keep up). "
+                    "Kill capture was unaffected.",
+                    flush=True,
+                )
+            _pcap_queue = None
+            _pcap_thread = None
         if _pcap_writer is not None:
             try:
                 _pcap_writer.flush()

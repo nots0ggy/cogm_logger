@@ -196,12 +196,25 @@
 	// BDO column shift. Without a roster we leave the saved order alone (the
 	// user can hit Auto-detect for an offline guess). Manual changes after this
 	// stick — auto_detected stays true so it never clobbers them.
+	// A calibrated opcode already tells us which column is killer, victim and
+	// guild, validated against a full warscore board. The roster heuristic
+	// guesses the same three from hit-rates over the first FIVE kills, accepts
+	// on a single hit in five, and falls back to "most distinct column" when the
+	// enemy roster is empty. It must never outrank the registry.
+	//
+	// It used to. detect_source flipped to 'roster' and the registry pin at
+	// :291 is guarded on detect_source !== 'roster', so the calibrated map could
+	// not come back for the rest of the session. Worse, the kill-direction flag
+	// is NOT re-derived with it: resolve_kill_offset keeps the registry's flag,
+	// whose meaning is defined relative to the REGISTRY's killer column. Swap
+	// the columns underneath a fixed flag and every line in the war inverts.
 	$: if (
 		!auto_detected &&
 		config &&
 		logs.length >= 5 &&
 		possible_name_offsets.length >= 3 &&
-		cogm_roster?.configured
+		cogm_roster?.configured &&
+		detect_source !== 'registry'
 	) {
 		auto_detected = true;
 		auto_detect();
@@ -280,19 +293,31 @@
 		if (!config) return;
 		// A calibrated opcode gives a deterministic column baseline — apply it once
 		// per session (before the indices are read into config), over the saved
-		// order and the scramble-prone frequency heuristic. We deliberately do NOT
-		// set auto_detected here: when a CoGM roster is configured the content-based
-		// roster auto-detect still runs and can refine/self-heal these columns (it
-		// catches a same-opcode column shift a static map can't). Without a roster
-		// the registry columns stand. A manual edit (detect_source==='manual')
-		// always wins. The kill offset is pinned separately and config-free in
+		// order and the scramble-prone frequency heuristic.
+		//
+		// The registry now OUTRANKS the roster heuristic, which is a change: the
+		// roster branch used to be allowed to refine these columns as a
+		// self-heal for a same-opcode column shift. It cannot be trusted with
+		// that. It decides on the first five kills, accepts on one hit in five,
+		// and guesses by column shape when the enemy roster is empty — and it
+		// does not re-derive the kill-direction flag, whose meaning is defined
+		// relative to the registry's killer column. Reassigning killer/victim
+		// under a fixed flag inverts every line in the war, which is a far worse
+		// failure than the column shift it was there to catch.
+		//
+		// A manual edit (detect_source === 'manual') still wins over everything.
+		// The kill offset is pinned separately and config-free in
 		// resolve_kill_offset, so it self-heals the "0 kills" bug on every path.
 		const known = identifier ? lookup_packet(identifier) : null;
+		// Deliberately NOT guarded on detect_source !== 'roster'. The registry is
+		// calibrated against a full warscore board; the roster branch is a
+		// five-kill shape heuristic. If the registry arrives after the roster
+		// already guessed (a slow fetch, or five kills landing first), the
+		// calibrated map still has to win. Only a manual choice outranks it.
 		if (
 			identifier &&
 			known &&
 			detect_source !== 'manual' &&
-			detect_source !== 'roster' &&
 			registry_applied !== identifier &&
 			possible_name_offsets[known.name_order.killer] &&
 			possible_name_offsets[known.name_order.victim] &&
@@ -403,17 +428,63 @@
 	// the legacy heuristic as a last resort.
 	function resolve_kill_offset(logs: LogType[]) {
 		if (logs.length === 0) return [DEFAULT_KILL_OFFSET];
+		const dominant = dominant_identifier(logs.map((l) => l.identifier));
+
 		// A calibrated opcode decodes deterministically: use its validated flag
 		// offset and skip the heuristics. This is the fix for "every player shows
 		// 0 kills" — the 640100a115 layout puts the flag at char 259, but the
 		// default offset 15 (correct for the older 6b layout) lands inside the
 		// guild name there and always reads "died".
-		const known = lookup_packet(dominant_identifier(logs.map((l) => l.identifier)) ?? '');
+		const known = lookup_packet(dominant ?? '');
 		if (known) return [known.kill];
-		if (is_binary_flag(logs, DEFAULT_KILL_OFFSET, false)) return [DEFAULT_KILL_OFFSET];
-		const structural = structural_kill_offset(logs);
-		if (structural.length) return structural;
-		return find_kill_offset(logs);
+
+		// Detect on ONE packet layout only. A war is overwhelmingly one opcode
+		// with a handful of strays (a channel swap, an open-world kill), and
+		// those strays have a different byte layout, so mixing them in is
+		// comparing bytes that do not mean the same thing.
+		//
+		// This is not hypothetical. Replaying five real sessions with the
+		// registry withheld: s1 was 784 of one opcode plus 3 strays, and those 3
+		// packets made offset 83 look like a clean 0/1 flag, which beat the true
+		// flag at 141 purely by being a lower index. The war read 2 kills / 785
+		// deaths instead of 302 / 485. s3 did the same on a single stray. Remove
+		// the strays and detection returns the correct offset every time.
+		const clean = dominant ? logs.filter((l) => l.identifier === dominant) : logs;
+		const sample = clean.length > 0 ? clean : logs;
+
+		if (is_binary_flag(sample, DEFAULT_KILL_OFFSET, false)) return [DEFAULT_KILL_OFFSET];
+		const structural = structural_kill_offset(sample);
+		if (structural.length) return score_kill_offsets(sample, structural);
+		return find_kill_offset(sample);
+	}
+
+	/**
+	 * Rank structural candidates instead of taking the lowest index.
+	 *
+	 * structural_kill_offset walks offsets ascending, so whatever qualifies
+	 * first wins, and kill_index is hardcoded to 0. A byte that is constant 0x00
+	 * across real kills is rejected until one stray packet supplies a '1' there,
+	 * at which point it qualifies and, being a lower offset, outranks the real
+	 * flag. Index order carries no information about which byte is the flag.
+	 *
+	 * A real direction flag splits a war somewhere near even. A byte that reads
+	 * 99% one way is a constant with noise in it, not a flag, so rank by
+	 * distance from a plausible split and drop the degenerate ones entirely.
+	 */
+	function score_kill_offsets(logs: LogType[], candidates: number[]) {
+		const scored = candidates
+			.map((off) => {
+				let ones = 0;
+				for (const log of logs) if (log.hex[off] === '1') ones++;
+				const ratio = logs.length > 0 ? ones / logs.length : 0;
+				return { off, ratio, distance: Math.abs(ratio - 0.5) };
+			})
+			// Under 2% either way is a constant with a couple of stray bits, which
+			// is exactly the shape that hijacked s1 and s3.
+			.filter((c) => c.ratio >= 0.02 && c.ratio <= 0.98)
+			.sort((a, b) => a.distance - b.distance);
+		if (scored.length === 0) return candidates;
+		return [...scored.map((c) => c.off), ...candidates.filter((o) => !scored.some((c) => c.off === o))];
 	}
 
 	function find_kill_offset(logs: LogType[]) {
