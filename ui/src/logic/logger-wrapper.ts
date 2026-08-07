@@ -44,7 +44,8 @@ const arg_mapping = {
 	status: '-s',
 	update: '-u',
 	record: '-r',
-	analyze: '-a'
+	analyze: '-a',
+	test: '-t'
 } as const;
 
 let logger: os.SpawnedProcess | null = null;
