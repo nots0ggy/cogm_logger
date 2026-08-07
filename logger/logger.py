@@ -9,7 +9,7 @@ if sys.platform != "win32":
     sys.modules.setdefault("scapy.arch.windows", types.ModuleType("scapy.arch.windows"))
 
 from src import config
-from src.options import status_check, open, sniff, record, update_config, full_capture, live_capture as analyze
+from src.options import status_check, open, sniff, record, update_config, full_capture, self_test, live_capture as analyze
 
 import time
 from time import localtime, strftime
@@ -40,6 +40,8 @@ parser.add_argument("-p", "--ipFilter",
                     help="Enable Ip Filter to improve performance", action= BooleanOptionalAction)
 parser.add_argument("-F", "--full",
                     help="Capture the full raw payload of all BDO traffic (pcap + jsonl) for protocol research", action= BooleanOptionalAction)
+parser.add_argument("-t", "--testCapture",
+                    help="Pre-war self-test: confirm the running game's traffic is visible to the capture path", action= BooleanOptionalAction)
 
 
 args = parser.parse_args()
@@ -66,6 +68,9 @@ else:
 
 if args.status:
     status_check.check_health()
+    exit()
+elif args.testCapture:
+    self_test.run_self_test()
     exit()
 elif args.full:
     full_capture.start_full_capture(args.output, args.allInterfaces)

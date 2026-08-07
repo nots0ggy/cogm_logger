@@ -5,6 +5,7 @@
 	import { onMount } from 'svelte';
 	import LoadingIndicator from '../svelte-ui/elements/loading-indicator.svelte';
 	import { check_status, type LoggerStatus } from '../logic/logger-status';
+	import { start_logger, stop_logger } from '../logic/logger-wrapper';
 	import { find_last_session } from '../logic/recover';
 	import GoMarkGithub from 'svelte-icons/go/GoMarkGithub.svelte';
 	import Icon from '../svelte-ui/elements/icon.svelte';
@@ -17,12 +18,30 @@
 	let full_update_available = false;
 	let version = NL_APPVERSION;
 	let recoverable_logs = 0;
+	let update_failed = false;
+	let updating = false;
+
+	/** True when a is a strictly newer semver than b. The old check fired on ANY
+	 * mismatch, which during the tag-first release window (manifest still behind
+	 * the freshly installed build) would have forced a DOWNGRADE. A capture bug
+	 * fix must never be able to un-ship itself. */
+	function newer_than(a: string, b: string): boolean {
+		const pa = a.split('.').map(Number);
+		const pb = b.split('.').map(Number);
+		for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+			const x = pa[i] ?? 0;
+			const y = pb[i] ?? 0;
+			if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+			if (x !== y) return x > y;
+		}
+		return false;
+	}
 
 	async function check_for_updates() {
 		let url =
 			'https://raw.githubusercontent.com/nots0ggy/cogm_logger/main/version/version-manifest.json';
 		let manifest = await updater.checkForUpdates(url);
-		if (manifest.version != NL_APPVERSION) {
+		if (newer_than(manifest.version, NL_APPVERSION)) {
 			if (
 				manifest.version.split('.').length != NL_APPVERSION.split('.').length ||
 				manifest.version.split('.')[0] != NL_APPVERSION.split('.')[0] ||
@@ -37,6 +56,8 @@
 	}
 
 	async function update() {
+		updating = true;
+		update_failed = false;
 		try {
 			if (full_update_available) {
 				os.execCommand(`update.bat ${version}`, { background: true });
@@ -46,11 +67,12 @@
 				await app.restartProcess();
 			}
 		} catch (err) {
-			alert(
-				'Updating went wrong, check your internet connection. ' + (err as Error).message || err
-			);
+			// Stay blocked (the gate only exists when we KNOW a newer build is
+			// out), but say so and offer a retry instead of an alert() loop.
+			update_failed = true;
 			console.error(err);
 		}
+		updating = false;
 	}
 
 	onMount(async () => {
@@ -68,9 +90,76 @@
 			console.error(e);
 		}
 		loading = false;
+		// Forced update: an outdated logger records worse wars (the 1.30
+		// interface + dedup fixes exist because of exactly that), so when a
+		// newer build is KNOWN to exist, update immediately instead of asking.
+		// Fail-open by construction: if the manifest can't be reached,
+		// check_for_updates threw and no flag was set, so an outage or an
+		// offline machine can never block recording. Flags read directly (not
+		// the $: derived) so this never races the reactive flush.
+		if (update_available || full_update_available) {
+			await update();
+		}
 	});
 
 	$: has_update = update_available || full_update_available;
+
+	// ── Pre-war capture self-test ──
+	// One click before the war answers "will kills actually be captured":
+	// the sniffer looks for the running game's own server traffic through the
+	// same interface ladder the real capture uses.
+	type TestState = 'idle' | 'running' | 'ok' | 'fail';
+	let test_state: TestState = 'idle';
+	let test_message = '';
+	let test_timeout: ReturnType<typeof setTimeout> | null = null;
+
+	const TEST_FAIL_MESSAGES: Record<string, string> = {
+		GAME_NOT_RUNNING: 'Black Desert is not running. Start the game first.',
+		NO_CONNECTION: 'Game found, but no server connection yet. Finish loading in, then retest.',
+		NO_TRAFFIC:
+			'Game traffic is not visible to the capture driver. Try Restart capture driver in Settings, or run as administrator.',
+		UNSUPPORTED_OS: 'The self-test is Windows-only.',
+		ERROR: 'Self-test failed to run. Try again, or check Settings.'
+	};
+
+	async function run_capture_test() {
+		if (test_state === 'running') return;
+		test_state = 'running';
+		test_message = 'Looking for the game connection…';
+		// The python side bounds itself (~30s worst case across attempts); this
+		// guard is for a wedged process so the button can't stick forever.
+		test_timeout = setTimeout(async () => {
+			if (test_state === 'running') {
+				test_state = 'fail';
+				test_message = TEST_FAIL_MESSAGES.ERROR;
+				await stop_logger().catch(() => {});
+			}
+		}, 45_000);
+
+		await start_logger((line, status) => {
+			if (status === 'running' && line.startsWith('SELFTEST ')) {
+				const rest = line.slice('SELFTEST '.length);
+				const code = rest.split(' ')[0];
+				if (code === 'OK') {
+					const iface = /iface=(.+?) server=/.exec(rest)?.[1] ?? 'capture path';
+					const packets = /packets=(\d+)/.exec(rest)?.[1] ?? '?';
+					test_state = 'ok';
+					test_message = `Capture path confirmed on ${iface} (${packets} game packets seen). You're ready to record.`;
+				} else if (code === 'TRYING') {
+					test_message = `Listening on ${rest.slice('TRYING '.length)}…`;
+				} else if (code in TEST_FAIL_MESSAGES) {
+					test_state = 'fail';
+					test_message = TEST_FAIL_MESSAGES[code];
+				}
+			} else if (status === 'terminated') {
+				if (test_timeout) clearTimeout(test_timeout);
+				if (test_state === 'running') {
+					test_state = 'fail';
+					test_message = TEST_FAIL_MESSAGES.ERROR;
+				}
+			}
+		}, 'test');
+	}
 </script>
 
 <div class="flex flex-col gap-4 max-w-md mx-auto w-full">
@@ -93,15 +182,32 @@
 		{/if}
 	</div>
 
-	<!-- Update banner -->
+	<!-- Update gate: a known-newer build updates itself; recording waits. An
+	     old logger captures worse wars, so "skip for now" is not on offer. -->
 	{#if has_update}
-		<button
-			class="flex items-center justify-between gap-3 px-4 h-10 border border-gold rounded-md bg-gold/10 hover:bg-gold/15 transition-colors"
-			on:click={update}
-		>
-			<span class="text-caption text-gold">Version {version} available</span>
-			<span class="text-caption text-gold font-semibold">Update now</span>
-		</button>
+		{#if updating}
+			<div
+				class="flex items-center justify-between gap-3 px-4 h-10 border border-gold rounded-md bg-gold/10"
+			>
+				<span class="text-caption text-gold">Updating to {version}…</span>
+				<LoadingIndicator />
+			</div>
+		{:else if update_failed}
+			<button
+				class="flex items-center justify-between gap-3 px-4 h-10 border border-gold rounded-md bg-gold/10 hover:bg-gold/15 transition-colors"
+				on:click={update}
+			>
+				<span class="text-caption text-gold">Update to {version} failed. Check your connection.</span>
+				<span class="text-caption text-gold font-semibold">Retry</span>
+			</button>
+		{:else}
+			<div
+				class="flex items-center justify-between gap-3 px-4 h-10 border border-gold rounded-md bg-gold/10"
+			>
+				<span class="text-caption text-gold">Version {version} required</span>
+				<span class="text-caption text-gold font-semibold">Starting update…</span>
+			</div>
+		{/if}
 	{/if}
 
 	<!-- Primary CTA: the app's one job, so make it the clear hero. Gate ONLY on a
@@ -112,12 +218,16 @@
 		<Button
 			class="w-full h-14 text-base font-semibold"
 			on:click={() => goto('/record')}
-			disabled={status?.npcap_installed === false}
+			disabled={status?.npcap_installed === false || has_update}
 		>
 			Record
 		</Button>
 		<p class="text-caption text-center mt-1.5">
-			{status?.npcap_installed === false ? 'Install Npcap to start capturing' : 'Start capturing your guild war'}
+			{status?.npcap_installed === false
+				? 'Install Npcap to start capturing'
+				: has_update
+				? `Update to ${version} to record. Old versions capture incomplete wars.`
+				: 'Start capturing your guild war'}
 		</p>
 	</div>
 
@@ -133,6 +243,30 @@
 			>
 		</button>
 	{/if}
+
+	<!-- Pre-war self-test: confirm the capture path before the war starts. -->
+	<div>
+		<Button
+			color="secondary"
+			class="w-full"
+			on:click={run_capture_test}
+			disabled={test_state === 'running' || status?.npcap_installed === false || has_update}
+		>
+			{test_state === 'running' ? 'Testing capture…' : 'Test capture'}
+		</Button>
+		{#if test_state !== 'idle' && test_message}
+			<p
+				class="text-caption mt-1.5 {test_state === 'ok'
+					? 'text-green-400'
+					: test_state === 'fail'
+					? 'text-gold'
+					: 'text-foreground-secondary'}"
+				role="status"
+			>
+				{test_message}
+			</p>
+		{/if}
+	</div>
 
 	<!-- Secondary CTAs -->
 	<div class="grid grid-cols-2 gap-3">

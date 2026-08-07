@@ -44,8 +44,31 @@ def extract_string(hex, offset, length):
         return -1
 
 
-last_payload = ""
+# Per-source reassembly tails, keyed by the packet's source IP. This used to be
+# one global buffer shared by every stream, which was fine when we captured a
+# single interface: kill packets only ever came from one war server. Capturing
+# on every interface (1.30) means segments from different sources can interleave
+# into the same buffer and corrupt each other's reassembly. Kill packets come
+# FROM the war server, so the source IP is the stream identity that matters.
+# Bounded: a tail is trimmed on every parse pass, and the dict is cleared when
+# it collects too many sources (pre-lock browsing noise).
+_stream_tails = {}
+_STREAM_TAILS_MAX = 128
+_TAIL_MAX_HEX = 40_000
 current_position = 0
+
+# Record-level dedup. The same kill segment can be delivered more than once:
+# the same frame visible on two captured interfaces (VPN + physical NIC,
+# bridged/virtual switches) or a plain TCP retransmission. The parser is
+# stateless per delivery, so each copy used to emit an identical record and
+# every duplicated kill counted double. A kill record's full payload hex is
+# byte-identical across deliveries, so suppress repeats of the same payload
+# seen within a short window. Two DISTINCT kills are never byte-identical
+# (coords, counters and ids differ), so a 10s window cannot eat a real kill.
+_recent_records = {}
+_RECENT_MAX = 4096
+_DEDUP_WINDOW_S = 10
+_dups_suppressed = 0
 
 # Open recovery log file for the live session. start_sniff opens it once and
 # package_handler appends each parsed record so a crash leaves a readable
@@ -139,7 +162,7 @@ def _diag_write_summary():
         stamp = strftime("%H:%M:%S", localtime())
         _diag_file.write(
             f"SUMMARY {stamp} candidates={_diag_candidates} kills(5-name)={kills} "
-            f"names_dist={{{dist}}}\n"
+            f"names_dist={{{dist}}} dups_suppressed={_dups_suppressed}\n"
         )
         _diag_file.flush()
     except Exception:
@@ -171,7 +194,7 @@ def _diag_record(names_count, names, hexstr, package):
 
 
 def package_handler(package, output, ip_filter=True, record_pcap_path=None):
-    global last_payload, _pcap_writer, _pcap_count, _packets_seen, _pcap_dropped
+    global _pcap_writer, _pcap_count, _packets_seen, _pcap_dropped, _dups_suppressed
 
     _packets_seen += 1
 
@@ -230,7 +253,12 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
             return
 
         # iterate through the payload and try to find the identifier + player names + guild name + kill
-        payload = last_payload + payload
+        if len(_stream_tails) > _STREAM_TAILS_MAX:
+            # Pre-lock noise from many sources; keep only locked war servers.
+            for src in list(_stream_tails):
+                if src not in _locked_ips:
+                    del _stream_tails[src]
+        payload = _stream_tails.get(package_src, "") + payload
         position = 0
         while len(payload[position:]) >= 600:
             payload = payload[position:]
@@ -287,6 +315,22 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
                 # (best-effort, no-op when the diag file isn't open).
                 _diag_record(len(names), names, possible_log, package)
                 if len(names) == 5:
+                    # Duplicate delivery of the same kill segment (second
+                    # interface or TCP retransmission): identical payload seen
+                    # moments ago. Skip the emit AND the server-lock counting so
+                    # a duplicated fluke can't help a false lock either.
+                    now_ts = float(package.time)
+                    seen_ts = _recent_records.get(possible_log)
+                    _recent_records[possible_log] = now_ts
+                    if len(_recent_records) > _RECENT_MAX:
+                        cutoff = now_ts - _DEDUP_WINDOW_S
+                        for k in list(_recent_records):
+                            if _recent_records[k] < cutoff:
+                                del _recent_records[k]
+                    if seen_ts is not None and now_ts - seen_ts <= _DEDUP_WINDOW_S:
+                        _dups_suppressed += 1
+                        position = 600
+                        continue
                     # A kill record: count towards locking onto its server
                     # (threshold guards against a fluke false-positive payload
                     # hijacking the session — see _locked_ips).
@@ -325,11 +369,16 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
             else:
                 break
 
-        last_payload = payload[position:]
+        tail = payload[position:]
+        # A tail that outgrew any plausible split packet is stuck garbage;
+        # keep the recent end where a genuinely split kill could still live.
+        if len(tail) > _TAIL_MAX_HEX:
+            tail = tail[-1452:]  # 726 bytes = one full kill record in hex
+        _stream_tails[package_src] = tail
 
 
 def open_pcap(file, output, ip_filter=True, record_pcap_path=None):
-    global _locked_ips, _lock_counts
+    global _locked_ips, _lock_counts, _stream_tails, _recent_records, _dups_suppressed
     if file != None and not os.path.isfile(file):
         print("Invalid file", flush=True)
         return
@@ -337,6 +386,9 @@ def open_pcap(file, output, ip_filter=True, record_pcap_path=None):
     # previous file in the same process would silently zero the next one.
     _locked_ips = set()
     _lock_counts = {}
+    _stream_tails = {}
+    _recent_records = {}
+    _dups_suppressed = 0
     print("Reading " + file, flush=True)
     if os.name == "nt":
         print("Loading file into ram. This may take a while.", flush=True)
@@ -415,12 +467,16 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
     # declared here the assignment below binds a local, the "did this interface
     # deliver anything" check always reads 0, and a capture that worked is
     # reported as a dead driver.
-    global _packets_seen
+    global _packets_seen, _stream_tails, _recent_records, _dups_suppressed
     try:
         print("Reading Network...", flush=True)
-        # Fresh server lock per session (see _locked_ips above).
+        # Fresh server lock + reassembly/dedup state per session (see the
+        # module-level docs on _stream_tails and _recent_records).
         _locked_ips = set()
         _lock_counts = {}
+        _stream_tails = {}
+        _recent_records = {}
+        _dups_suppressed = 0
         if record_pcap_path is not None:
             # Absolute path so the UI can show the user exactly where the
             # full-packet capture lands (for sharing it in for research).
@@ -561,6 +617,12 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
                 print(
                     f"pcap: dropped {_pcap_dropped} packets (disk could not keep up). "
                     "Kill capture was unaffected.",
+                    flush=True,
+                )
+            if _dups_suppressed:
+                print(
+                    f"Suppressed {_dups_suppressed} duplicate kill deliveries "
+                    "(retransmissions or the same packet on multiple interfaces).",
                     flush=True,
                 )
             _pcap_queue = None
