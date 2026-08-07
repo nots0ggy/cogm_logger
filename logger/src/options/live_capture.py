@@ -295,7 +295,16 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
             # byte-identical to the proven pre-coords behaviour; possible_log
             # only widens what we ship downstream.
             if len(payload) >= 600:
-                possible_log = payload[0:726]
+                # 1600 hex (800 bytes), widened from 726 on 2026-08-07. The
+                # patch packet 6a0100ce0b stopped carrying the FIELDED character
+                # in the five known name slots (it sends some other char of the
+                # family, which misclassed 25 players in one night). If the real
+                # fielded char exists anywhere in this packet, it is past the
+                # old 363-byte cutoff, so ship a deeper tail and let the server
+                # analyze it. Name detection stays on the first 600 hex; the
+                # tail may include bytes of the NEXT packet in the buffer, which
+                # downstream decoding already tolerates (it did at 726 too).
+                possible_log = payload[0:1600]
                 name_window = payload[0:600]
                 i = 0
                 names = []
@@ -373,7 +382,7 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
         # A tail that outgrew any plausible split packet is stuck garbage;
         # keep the recent end where a genuinely split kill could still live.
         if len(tail) > _TAIL_MAX_HEX:
-            tail = tail[-1452:]  # 726 bytes = one full kill record in hex
+            tail = tail[-3200:]  # two full 800-byte emit windows in hex
         _stream_tails[package_src] = tail
 
 
