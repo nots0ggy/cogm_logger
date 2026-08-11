@@ -63,8 +63,23 @@
 				os.execCommand(`update.bat ${version}`, { background: true });
 				await app.exit();
 			} else if (update_available) {
-				await updater.install();
-				await app.restartProcess();
+				try {
+					await updater.install();
+					await app.restartProcess();
+				} catch (err) {
+					// Installed builds live in Program Files, where this
+					// unelevated process can never overwrite resources.neu, so
+					// updater.install() fails on EVERY installed machine — that
+					// is what stranded 1.31.0 users when 1.31.1 shipped as the
+					// first patch-level bump. The installer path elevates via
+					// UAC and is the one every user has already been through,
+					// so hand over to it instead of surfacing a dead Retry.
+					// Portable builds run from a writable folder, take the
+					// in-place path above, and never reach this.
+					console.error('resources update failed, handing over to the installer:', err);
+					os.execCommand(`update.bat ${version}`, { background: true });
+					await app.exit();
+				}
 			}
 		} catch (err) {
 			// Stay blocked (the gate only exists when we KNOW a newer build is
@@ -197,7 +212,9 @@
 				class="flex items-center justify-between gap-3 px-4 h-10 border border-gold rounded-md bg-gold/10 hover:bg-gold/15 transition-colors"
 				on:click={update}
 			>
-				<span class="text-caption text-gold">Update to {version} failed. Check your connection.</span>
+				<span class="text-caption text-gold"
+					>Update to {version} failed. Retry, or reinstall the latest logger.</span
+				>
 				<span class="text-caption text-gold font-semibold">Retry</span>
 			</button>
 		{:else}
