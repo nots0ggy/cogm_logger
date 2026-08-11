@@ -42,7 +42,7 @@ const logger_callback: LoggerCallback = (data, status) => {
 		} else if (data.includes('The config is from the patch: ')) {
 			logger_status.patch = data.replace('The config is from the patch: ', '');
 		}
-	} else if (status === 'error') {
+	} else if (status === 'stderr') {
 		console.error('error', data);
 		logger_status.something_else = data;
 	} else if (status === 'terminated') {

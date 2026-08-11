@@ -46,9 +46,10 @@
 				logs.push(new_log);
 				logs = logs;
 			}
-		} else if (status === ('error' as any)) {
-			console.error(data);
-			loading = false;
+		} else if (status === 'stderr') {
+			// Diagnostics from the parser; a dead parse still ends in
+			// 'terminated', which clears loading below.
+			console.error('[open stderr]', data);
 		} else if (status === 'terminated') {
 			loading = false;
 		}

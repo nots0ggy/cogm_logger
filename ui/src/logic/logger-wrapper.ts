@@ -18,12 +18,20 @@ function handle_process(evt: CustomEvent) {
 				}
 				break;
 			case 'stdErr':
-				alert(
-					'Something went wrong. Please report this in the CoGM support server with the following error message:\n\n' +
-						evt.detail.data
-				);
-				console.error(evt.detail.data);
-				callback?.(evt.detail.data.trim(), 'error');
+				// Logged and forwarded, never alert()ed. Python's stderr is a
+				// diagnostics channel, not a failure signal: scapy prints
+				// interface warnings there on every VPN or virtual-adapter
+				// machine, and the interface ladder walks MORE adapters since
+				// 1.30. Each chunk used to raise a blocking native popup here,
+				// then reach the record page as 'error', which alerted AGAIN and
+				// restarted the logger into the same warning until the retry cap
+				// produced a third popup. One harmless warning, a stack of
+				// dialogs, and a capture restart it never needed.
+				//
+				// Real failure remains observable where it actually manifests:
+				// the process exits, and 'terminated' carries the exit code.
+				console.error('[logger stderr]', evt.detail.data);
+				callback?.(evt.detail.data.trim(), 'stderr');
 				break;
 			case 'exit':
 				console.log(`Logger process terminated with exit code: ${evt.detail.data}`);
@@ -33,8 +41,12 @@ function handle_process(evt: CustomEvent) {
 				break;
 		}
 	} else {
-		console.log('Invalid logger', logger, evt.detail.id);
-		alert('Something went wrong. Invalid Logger');
+		// A stale event from a process we already replaced. With the status
+		// check, the self-test and the updater all spawning the logger, a late
+		// exit event from the previous process is ordinary lifecycle, not an
+		// error the user can act on — alerting here turned every overlap into
+		// a "Something went wrong" popup.
+		console.warn('[logger] event from a stale process ignored', logger?.id, evt.detail.id);
 	}
 }
 
@@ -50,7 +62,7 @@ const arg_mapping = {
 
 let logger: os.SpawnedProcess | null = null;
 
-export type LoggerCallback = (data: string, status: 'running' | 'terminated' | 'error') => void;
+export type LoggerCallback = (data: string, status: 'running' | 'terminated' | 'stderr') => void;
 let callback: LoggerCallback | null = null;
 
 // Set by stop_logger, cleared at the start of start_logger. A reconnect

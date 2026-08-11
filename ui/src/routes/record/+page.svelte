@@ -124,28 +124,15 @@
 			} else if (data.includes('Error while reading network.')) {
 				alert('Error while reading network. Please report this in the CoGM support server.');
 			}
-		} else if (status === ('error' as any)) {
-			// A classified capture failure already raised the recovery panel, which
-			// owns the retry from here (its buttons call retry_capture). Don't also
-			// fire the legacy blind reconnect and alert: that just respawns into the
-			// same failure and oscillates the label and the alert.
-			if (capture_error) return;
-			console.error(data);
-			alert(
-				'An error occured while trying to start the logger. Error message: ' +
-					data +
-					'\nLogger will be restarted.'
-			);
-			if (!is_destroyed && retry_count < 3) {
-				recording_state.set('reconnecting');
-				start_logger(logger_callback, 'analyze', spawn_args());
-				retry_count++;
-			} else if (!is_destroyed && retry_count >= 3) {
-				recording_state.set('error');
-				alert('Tried to start logger 3 times, but failed. Please try again.');
-			} else {
-				retry_count = 0;
-			}
+		} else if (status === 'stderr') {
+			// Diagnostics only. This used to be 'error': every stderr chunk from
+			// the capture process alerted AND restarted the logger, so one scapy
+			// interface warning at spawn became a popup, a respawn into the same
+			// warning, and two more popups at the retry cap — mid-war, on a
+			// capture that was working. If the process actually dies,
+			// 'terminated' fires below with the exit code and the existing retry
+			// path owns it.
+			console.error('[capture stderr]', data);
 		} else if (status === 'terminated') {
 			// Same as the error branch: when the recovery panel is up, let it drive
 			// the retry instead of blindly respawning into the same failure.
