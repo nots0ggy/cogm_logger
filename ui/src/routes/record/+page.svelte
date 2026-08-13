@@ -9,8 +9,18 @@
 	import { os } from '@neutralinojs/lib';
 	import { onDestroy, onMount } from 'svelte';
 	import Logger from '../../components/create-config/logger.svelte';
-	import { get_config, type Config, type LogType } from '../../components/create-config/config';
-	import { log_dedup_key, reframe_log } from '../../components/create-config/packet-registry';
+	import {
+		get_config,
+		get_cogm_roster,
+		type Config,
+		type LogType
+	} from '../../components/create-config/config';
+	import {
+		log_dedup_key,
+		reframe_log,
+		orient_observer_log,
+		own_family_set
+	} from '../../components/create-config/packet-registry';
 	import { recording_state, recording_started_at, packets_seen } from '../../logic/recording-store';
 	import { capture_path } from '../../logic/paths';
 	import StatusDot from '../../components/status-dot.svelte';
@@ -19,6 +29,10 @@
 	import { show_toast } from '../../svelte-ui/util';
 
 	let logs: LogType[] = [];
+	// Own alliance families (lowercased) for observer-record orientation.
+	// Loaded once at mount; null until then (records pass through unoriented
+	// for those first milliseconds, and the dedup key keeps them unique).
+	let own_families: Set<string> | null = null;
 	// Dedup keys for O(1) duplicate rejection (see the callback). Lives for the
 	// whole record session; logs only grow here, never reset.
 	const seen_logs = new Set<string>();
@@ -101,7 +115,7 @@
 				}
 				// reframe_log recovers records the capture engine anchored a few
 				// bytes early (unknown opcode with the real packet embedded).
-				const new_log = reframe_log({
+				const framed = reframe_log({
 					identifier: d[0],
 					time: d[1],
 					names: d.slice(2, 7).map((name) => {
@@ -110,6 +124,11 @@
 					}),
 					hex: d[7]
 				});
+				// 2026-08-13 observer records are a global zone feed: orient each
+				// one against the alliance roster (ours-as-subject) and drop
+				// third-party kills before they can touch stats or upload.
+				const new_log = orient_observer_log(framed, own_families);
+				if (!new_log) return;
 
 				// Dedup by key via a Set instead of logs.find() per record. find()
 				// is O(n) per kill, so a long siege with thousands of kills degraded
@@ -154,6 +173,7 @@
 
 	onMount(async () => {
 		config = await get_config();
+		own_families = own_family_set(await get_cogm_roster());
 		// Documents/CoGM Logger/session-<ts>.log. The engine derives the .pcap
 		// path from this folder, so both land together in a writable location.
 		session_path = await capture_path(`session-${Date.now()}.log`);

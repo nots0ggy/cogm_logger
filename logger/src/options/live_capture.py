@@ -53,6 +53,8 @@ def extract_string(hex, offset, length):
 # Bounded: a tail is trimmed on every parse pass, and the dict is cleared when
 # it collects too many sources (pre-lock browsing noise).
 _stream_tails = {}
+# New-format (2026-08-13) per-source buffers; consumed as records emit.
+_new_tails = {}
 _STREAM_TAILS_MAX = 128
 _TAIL_MAX_HEX = 40_000
 current_position = 0
@@ -134,6 +136,52 @@ _DIAG_SAMPLE_CAP = 300
 _DIAG_SUMMARY_EVERY = 500
 
 identifier_regex = r"[56][0-9a-f]0100[0-9a-f]{4}"
+
+# ── 2026-08-13 patch: the second kill format ─────────────────────────────────
+# The August 13 game update replaced the 5-name fixed-offset kill packet with a
+# marker-based record (docs/patch-2026-08-13-new-kill-format.md). Byte-identical
+# in every observed kill, and absent from 178MB of pre-patch war traffic:
+#
+#   2e 03 01 00 03 01 02 00 00   record signature
+#   a7 00 00 ae 1c               identity marker #1 (killer: char, family)
+#   ... variable 200-400 bytes ...
+#   a7 00 00 ae 1c               identity marker #2 (victim: char, family)
+#
+# The gap between the two identity blocks VARIES, so this cannot be expressed
+# as registry offsets; the blocks are found by scanning for the marker. Names
+# sit at fixed positions within each block: char at marker+5 bytes, family at
+# marker+71 bytes.
+#
+# The emitted line keeps the exact 8-field shape of the old format (identifier,
+# time, five "name offset" columns, hex) by padding column 5 with the literal
+# guild "Unknown" (the record carries no guild name). Unlike the old packets,
+# these records are a GLOBAL zone feed with no implicit "our side": the UI
+# orients each record against the alliance roster and drops third-party kills
+# (orient_observer_log in packet-registry.ts) before stats or upload see it.
+# The registry entry for identifier 2e03010003 maps killer/victim to the
+# family columns and points the kill flag at hex char 5 of the signature,
+# which is a constant '1' (every record IS a kill; direction is block order,
+# killer first, matching the on-screen feed "[A] slaughtered [B]").
+NEW_SIG_HEX = "2e0301000301020000a70000ae1c"
+NEW_MARK_HEX = "a70000ae1c"
+# From signature start: enough to hold both identity blocks at the largest
+# observed span (~700 bytes) with headroom.
+NEW_WINDOW_HEX = 1600
+# char at +5B, family at +71B from each marker start.
+NEW_CHAR_OFF_HEX = len(NEW_MARK_HEX)      # 10 hex chars after the marker
+NEW_FAM_OFF_HEX = 71 * 2 - 10             # relative to char position
+# The gap between the two identity blocks varies per record, but the UI and
+# CoGM decode names by ONE fixed offset per column across a whole war. So the
+# emitted hex is NORMALIZED: signature+killer block, then the victim block
+# spliced to a fixed position, then a literal "Unknown" guild field (UTF-16LE,
+# zero-padded like a real name field), then real trailing wire bytes for
+# dedup entropy. The raw wire bytes stay available in the session pcap and
+# the server-side raw session. Resulting constant offsets:
+#   killer char 28, killer family 160, victim char 250, victim family 382,
+#   guild 480, kill flag at hex char 5 (inside the signature, constantly '1':
+#   every record IS a kill; direction is block order, killer first).
+NEW_BLOCK_HEX = 240                        # hex chars kept per identity block
+NEW_UNKNOWN_FIELD_HEX = "55006e006b006e006f0077006e00".ljust(64, "0")
 name_regex = r"^[A-Z][a-zA-Z0-9_]{2,15}$"
 
 # War-server IPs learned this session. A source locks in after it produces
@@ -193,6 +241,148 @@ def _diag_record(names_count, names, hexstr, package):
         pass
 
 
+def _scan_new_format(payload, package, package_src):
+    """Detect and emit 2026-08-13-format kill records.
+
+    Keeps its own per-source reassembly buffer (_new_tails) and CONSUMES each
+    emitted record from it, so a record is emitted exactly once no matter how
+    the stream is segmented. Independent of the old detector's buffer: the two
+    formats never share bytes, and neither scan disturbs the other.
+    """
+    global _dups_suppressed
+    buf = _new_tails.get(package_src, "") + payload
+    pos = 0
+    retain_from = None
+    while True:
+        idx = buf.find(NEW_SIG_HEX, pos)
+        if idx < 0:
+            break
+
+        # First identity marker is the tail of the signature itself.
+        m1 = idx + len(NEW_SIG_HEX) - len(NEW_MARK_HEX)
+
+        # Second identity block: the next marker within the record window.
+        # The gap between blocks varies (208 and 400 bytes observed), which
+        # is why this is a scan and not a registry offset.
+        m2 = buf.find(NEW_MARK_HEX, m1 + len(NEW_MARK_HEX), idx + NEW_WINDOW_HEX)
+        if m2 < 0:
+            if len(buf) >= idx + NEW_WINDOW_HEX:
+                # A full window with a single identity block is a different
+                # message type (28 of 30 marker records in the reference
+                # capture are singles); skip past it.
+                pos = idx + len(NEW_SIG_HEX)
+                continue
+            # The rest of the record is still in flight.
+            retain_from = idx
+            break
+
+        # Wait until the victim's family field has fully arrived.
+        rec_end = m2 + NEW_CHAR_OFF_HEX + NEW_FAM_OFF_HEX + 64
+        if len(buf) < rec_end:
+            retain_from = idx
+            break
+
+        k_char = extract_string(buf, m1 + NEW_CHAR_OFF_HEX, 64)
+        k_fam = extract_string(buf, m1 + NEW_CHAR_OFF_HEX + NEW_FAM_OFF_HEX, 64)
+        v_char = extract_string(buf, m2 + NEW_CHAR_OFF_HEX, 64)
+        v_fam = extract_string(buf, m2 + NEW_CHAR_OFF_HEX + NEW_FAM_OFF_HEX, 64)
+        names_ok = all(
+            isinstance(n, str) and re.match(name_regex, n)
+            for n in (k_char, k_fam, v_char, v_fam)
+        )
+        if not names_ok:
+            pos = idx + len(NEW_SIG_HEX)
+            continue
+
+        # Normalized emit hex (see NEW_BLOCK_HEX above). Block slices are
+        # zero-padded to constant width so column offsets never move; the
+        # completeness check above only guarantees bytes through rec_end.
+        emit_hex = (
+            buf[idx : idx + NEW_BLOCK_HEX].ljust(NEW_BLOCK_HEX, "0")
+            + buf[m2 : m2 + NEW_BLOCK_HEX].ljust(NEW_BLOCK_HEX, "0")
+            + NEW_UNKNOWN_FIELD_HEX
+            + buf[m2 + NEW_BLOCK_HEX : m2 + NEW_BLOCK_HEX + 64]
+        )
+
+        # Duplicate delivery (second interface or TCP retransmission) of a
+        # record this consuming buffer already emitted from another copy of
+        # the stream. Same guard as the old detector.
+        now_ts = float(package.time)
+        seen_ts = _recent_records.get(emit_hex)
+        _recent_records[emit_hex] = now_ts
+        if len(_recent_records) > _RECENT_MAX:
+            cutoff = now_ts - _DEDUP_WINDOW_S
+            for k in list(_recent_records):
+                if _recent_records[k] < cutoff:
+                    del _recent_records[k]
+        if seen_ts is not None and now_ts - seen_ts <= _DEDUP_WINDOW_S:
+            _dups_suppressed += 1
+            pos = rec_end
+            continue
+
+        # Same lock semantics as the old detector: repeated kill records from
+        # one source is what identifies the war server.
+        if package_src not in _locked_ips:
+            _lock_counts[package_src] = _lock_counts.get(package_src, 0) + 1
+            if _lock_counts[package_src] >= _LOCK_THRESHOLD:
+                _locked_ips.add(package_src)
+                print(f"Locked onto war server {package_src}", flush=True)
+
+        time = strftime("%H:%M:%S", localtime(int(package.time)))
+        # The exact 8-field line shape of the old format, with the constant
+        # normalized offsets. Column 5 is the guild: this record carries no
+        # guild name, so it points at the embedded "Unknown" field. Block
+        # order is killer first, matching the on-screen feed; if ground truth
+        # flips that, the fix is a UI hotfix (registry name_order + the
+        # orient_observer_log field constants), and raw sessions re-decode
+        # server-side for wars already uploaded.
+        line = (
+            emit_hex[0:10]
+            + ","
+            + time
+            + ","
+            + f"{k_char} 28"
+            + ","
+            + f"{k_fam} 160"
+            + ","
+            + f"{v_char} 250"
+            + ","
+            + f"{v_fam} 382"
+            + ","
+            + f"Unknown 480"
+            + ","
+            + emit_hex
+        )
+        print(line, flush=True)
+        if _log_file is not None:
+            try:
+                _log_file.write(line + "\n")
+                _log_file.flush()
+            except Exception:
+                pass
+        pos = rec_end
+
+    if retain_from is not None:
+        buf = buf[retain_from:]
+        # A partial record that outgrew any plausible split is stuck garbage
+        # (same guard as the old detector's tail cap).
+        if len(buf) > _TAIL_MAX_HEX:
+            buf = buf[-3200:]
+    else:
+        # No signature in flight; keep just enough for one split across the
+        # segment boundary. Everything before it can never match again.
+        keep = len(NEW_SIG_HEX) - 2
+        buf = buf[max(0, len(buf) - keep) :] if pos == 0 else buf[max(pos, len(buf) - keep) :]
+    if buf:
+        _new_tails[package_src] = buf
+    else:
+        _new_tails.pop(package_src, None)
+    if len(_new_tails) > _STREAM_TAILS_MAX:
+        for src in list(_new_tails):
+            if src not in _locked_ips:
+                del _new_tails[src]
+
+
 def package_handler(package, output, ip_filter=True, record_pcap_path=None):
     global _pcap_writer, _pcap_count, _packets_seen, _pcap_dropped, _dups_suppressed
 
@@ -228,7 +418,10 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
             record_this = (
                 (package_src in _locked_ips or package_dst in _locked_ips)
                 if locked
-                else re.search(identifier_regex, payload) is not None
+                else (
+                    re.search(identifier_regex, payload) is not None
+                    or NEW_MARK_HEX in payload
+                )
             )
             if record_this:
                 # Never blocks. A full queue means the writer is behind, and
@@ -249,6 +442,7 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
             ip_filter
             and package_src not in _locked_ips
             and re.search(identifier_regex, payload) is None
+            and NEW_MARK_HEX not in payload
         ):
             return
 
@@ -258,7 +452,16 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
             for src in list(_stream_tails):
                 if src not in _locked_ips:
                     del _stream_tails[src]
+        # New-format kills (2026-08-13 patch). Runs alongside the old
+        # detector rather than replacing it, so a rollback or a straggler
+        # server on the old format keeps recording. Keeps its OWN per-source
+        # reassembly buffer and consumes emitted records from it, so it must
+        # see the raw segment payload, not the old detector's tail-prefixed
+        # buffer (that tail would be re-appended on every packet).
+        _scan_new_format(payload, package, package_src)
+
         payload = _stream_tails.get(package_src, "") + payload
+
         position = 0
         while len(payload[position:]) >= 600:
             payload = payload[position:]
@@ -387,7 +590,7 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
 
 
 def open_pcap(file, output, ip_filter=True, record_pcap_path=None):
-    global _locked_ips, _lock_counts, _stream_tails, _recent_records, _dups_suppressed
+    global _locked_ips, _lock_counts, _stream_tails, _new_tails, _recent_records, _dups_suppressed
     if file != None and not os.path.isfile(file):
         print("Invalid file", flush=True)
         return
@@ -396,6 +599,7 @@ def open_pcap(file, output, ip_filter=True, record_pcap_path=None):
     _locked_ips = set()
     _lock_counts = {}
     _stream_tails = {}
+    _new_tails = {}
     _recent_records = {}
     _dups_suppressed = 0
     print("Reading " + file, flush=True)
@@ -476,7 +680,7 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
     # declared here the assignment below binds a local, the "did this interface
     # deliver anything" check always reads 0, and a capture that worked is
     # reported as a dead driver.
-    global _packets_seen, _stream_tails, _recent_records, _dups_suppressed
+    global _packets_seen, _stream_tails, _new_tails, _recent_records, _dups_suppressed
     try:
         print("Reading Network...", flush=True)
         # Fresh server lock + reassembly/dedup state per session (see the
@@ -484,6 +688,7 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
         _locked_ips = set()
         _lock_counts = {}
         _stream_tails = {}
+        _new_tails = {}
         _recent_records = {}
         _dups_suppressed = 0
         if record_pcap_path is not None:

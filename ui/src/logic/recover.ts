@@ -1,6 +1,11 @@
 import { filesystem } from '@neutralinojs/lib';
-import type { LogType } from '../components/create-config/config';
-import { log_dedup_key, reframe_log } from '../components/create-config/packet-registry';
+import { get_cogm_roster, type LogType } from '../components/create-config/config';
+import {
+	log_dedup_key,
+	reframe_log,
+	orient_observer_log,
+	own_family_set
+} from '../components/create-config/packet-registry';
 import { get_capture_dir } from './paths';
 
 // The live capture engine writes each parsed record to a session-<ts>.log in
@@ -13,12 +18,12 @@ export type RecoverableSession = {
 };
 
 /** Parse one raw engine line (identifier,time,n1 off,..,n5 off,hex) to a LogType. */
-function parse_line(line: string): LogType | null {
+function parse_line(line: string, own_families: Set<string> | null): LogType | null {
 	const d = line.split(',');
 	if (d.length !== 8) return null;
 	// reframe_log recovers records the capture engine anchored a few bytes
 	// early (unknown opcode with the real packet embedded right behind it).
-	return reframe_log({
+	const framed = reframe_log({
 		identifier: d[0],
 		time: d[1],
 		names: d.slice(2, 7).map((name) => {
@@ -27,6 +32,10 @@ function parse_line(line: string): LogType | null {
 		}),
 		hex: d[7]
 	});
+	// Observer records (2026-08-13 format): ours-as-subject, drop third-party
+	// kills. The session file holds raw engine lines, so a recovered war gets
+	// the same orientation the live view applied.
+	return orient_observer_log(framed, own_families);
 }
 
 /**
@@ -77,10 +86,11 @@ export async function find_last_session(): Promise<RecoverableSession | null> {
 
 	const logs: LogType[] = [];
 	const seen = new Set<string>();
+	const own_families = own_family_set(await get_cogm_roster());
 	for (const line of content.split('\n')) {
 		const trimmed = line.trim();
 		if (!trimmed) continue;
-		const log = parse_line(trimmed);
+		const log = parse_line(trimmed, own_families);
 		if (!log) continue;
 		// Dedup identical records the same way the live view does.
 		const key = log_dedup_key(log);
