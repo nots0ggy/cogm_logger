@@ -3,11 +3,24 @@
 	import { start_logger, type LoggerCallback } from '../../logic/logger-wrapper';
 	import Logger from '../../components/create-config/logger.svelte';
 	import { open_file } from '../../logic/file';
-	import { get_config, type Log, type LogType } from '../../components/create-config/config';
-	import { log_dedup_key, reframe_log } from '../../components/create-config/packet-registry';
+	import {
+		get_config,
+		get_cogm_roster,
+		type Log,
+		type LogType
+	} from '../../components/create-config/config';
+	import {
+		log_dedup_key,
+		reframe_log,
+		orient_observer_log,
+		own_family_set
+	} from '../../components/create-config/packet-registry';
 	import { filesystem } from '@neutralinojs/lib';
 	import LogEditor from '../../components/create-config/log-editor.svelte';
 	let logs: LogType[] = [];
+	// Own alliance families for observer-record orientation (same rules as the
+	// live record page). Loaded lazily before the engine starts a pcap parse.
+	let own_families: Set<string> | null = null;
 	let combat_logs: Log[] = [];
 	// Dedup keys for the network/pcap path; reset with logs in open_pcap.
 	let seen_logs = new Set<string>();
@@ -27,7 +40,7 @@
 			if (d.length === 8 && !data.includes('Network Interfaces:')) {
 				// reframe_log recovers records the capture engine anchored a few
 				// bytes early (unknown opcode with the real packet embedded).
-				const new_log = reframe_log({
+				const framed = reframe_log({
 					identifier: d[0],
 					time: d[1],
 					names: d.slice(2, 7).map((name) => {
@@ -36,6 +49,10 @@
 					}),
 					hex: d[7]
 				});
+				// Observer records (2026-08-13 format): ours-as-subject, drop
+				// third-party kills. Same orientation as the live record page.
+				const new_log = orient_observer_log(framed, own_families);
+				if (!new_log) return;
 
 				// Dedup via a Set rather than logs.find() per record (O(n^2) on a
 				// big capture). Reset alongside logs in open_pcap.
@@ -62,6 +79,7 @@
 		const filePaths = await open_file();
 		if (!filePaths || filePaths.length === 0) return;
 		const config = await get_config();
+		own_families = own_family_set(await get_cogm_roster());
 		loaded_filename = filePaths[0].split(/[\\/]/).pop() ?? filePaths[0];
 		if ((filePaths.length > 0 && filePaths[0].includes('.txt')) || filePaths[0].includes('.log')) {
 			const filePath = filePaths[0];

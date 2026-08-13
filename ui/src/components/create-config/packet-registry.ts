@@ -24,6 +24,7 @@
 import { storage } from '@neutralinojs/lib';
 import { writable } from 'svelte/store';
 import type { LogType } from './config';
+import { hexToString } from './config';
 
 export type PacketConfig = {
 	name_order: { killer: number; victim: number; guild: number };
@@ -52,8 +53,108 @@ export const KNOWN_PACKETS: Record<string, PacketConfig> = {
 	// col4 enemy family; flag at hex char 143 (byte 71), the only strict 0/1
 	// byte in the packet. Calibrated from a RAT raw session (100% roster
 	// anchoring on col3); direction matches the heuristic decode (704/410).
-	'640100d61c': { name_order: { killer: 3, victim: 4, guild: 1 }, kill: 143 }
+	'640100d61c': { name_order: { killer: 3, victim: 4, guild: 1 }, kill: 143 },
+	// 2026-08-13 game update: marker-based OBSERVER records replace the
+	// 5-name fixed-offset packet (docs/patch-2026-08-13-new-kill-format.md).
+	// The capture engine finds the two identity blocks by scanning for
+	// a70000ae1c markers (the gap between them varies) and emits NORMALIZED
+	// hex with constant columns: col0 killer char (28), col1 killer family
+	// (160), col2 victim char (250), col3 victim family (382), col4 an
+	// embedded "Unknown" guild field (480) — the record carries no guild
+	// name; CoGM resolves it by family. Every record is a kill, so the flag
+	// points at hex char 5 inside the record signature, which is always '1'.
+	// Unlike every packet above, these records are a GLOBAL zone feed: kills
+	// between two enemy guilds appear too, and neither side is implicitly
+	// "ours". orient_observer_log below rewrites each record to the
+	// subject-centric shape the rest of the pipeline (and CoGM ingest)
+	// assumes. Block order inside a record = killer first, matching the
+	// on-screen feed; if ground truth flips that, swap killer/victim HERE
+	// AND in orient_observer_log's field constants below (one-file hotfix
+	// release; a registry flip alone would fix display but not orientation).
+	'2e03010003': { name_order: { killer: 1, victim: 3, guild: 4 }, kill: 5 }
 };
+
+// ── Observer-record orientation (2026-08-13 format) ─────────────────────────
+// CoGM ingest assumes the subject column is always the uploader's guild
+// member (isAlly, guildName, warscore all key off it). A global feed breaks
+// that assumption, so each observer record is oriented against the alliance
+// roster BEFORE it enters the session:
+//   - our player is the killer  -> keep as-is (flag already '1')
+//   - our player is the victim  -> swap the killer/victim fields in the hex
+//     and zero the flag nibble, producing "ours died to theirs"
+//   - neither family is ours    -> drop the record (a third-party kill; the
+//     old format never surfaced these either, and counting them would credit
+//     strangers' kills to the uploading guild)
+// With no roster available the record is kept in killer-first order: a local
+// -only session still shows the feed, and upload requires a verified token,
+// which is what populates the roster.
+
+export const OBSERVER_OPCODE = '2e03010003';
+const OBS_FIELD = 64; // hex chars per name field
+const OBS_KCHAR = 28;
+const OBS_KFAM = 160;
+const OBS_VCHAR = 250;
+const OBS_VFAM = 382;
+const OBS_FLAG = 5;
+
+function obs_read(hex: string, off: number): string {
+	return hexToString(hex.slice(off, off + OBS_FIELD))
+		.replaceAll('\0', '')
+		.replaceAll(' ', '');
+}
+
+/** Lowercased own-family set from a stored roster, or null when unavailable. */
+export function own_family_set(roster: { ownFamilyNames: string[] } | null): Set<string> | null {
+	if (!roster || roster.ownFamilyNames.length === 0) return null;
+	return new Set(roster.ownFamilyNames.map((f) => f.toLowerCase().replaceAll(' ', '')));
+}
+
+/**
+ * Orient one observer record against the own-family roster. Returns the log
+ * unchanged for every other opcode, an oriented copy for an observer record,
+ * or null when the record is a third-party kill that must be dropped.
+ */
+export function orient_observer_log(log: LogType, own: ReadonlySet<string> | null): LogType | null {
+	if (log.identifier !== OBSERVER_OPCODE || !log.hex) return log;
+	if (!own) return log;
+	const k_fam = obs_read(log.hex, OBS_KFAM).toLowerCase();
+	const v_fam = obs_read(log.hex, OBS_VFAM).toLowerCase();
+	const k_own = own.has(k_fam);
+	const v_own = own.has(v_fam);
+	if (k_own) return log; // killer-first is already subject-centric (friendly
+	// fire records, both sides ours, stay killer-oriented too)
+	if (!v_own) return null; // third-party kill
+	// Ours is the victim: swap the two identity pairs in the hex and flip the
+	// direction nibble so the subject column holds our player and the line
+	// reads "ours died to theirs". Name entries swap with their offsets kept,
+	// since the columns' meaning (subject/other) stays positional.
+	const hex = log.hex;
+	const killer_pair = hex.slice(OBS_KCHAR, OBS_KCHAR + OBS_FIELD) + hex.slice(OBS_KFAM, OBS_KFAM + OBS_FIELD);
+	const victim_pair = hex.slice(OBS_VCHAR, OBS_VCHAR + OBS_FIELD) + hex.slice(OBS_VFAM, OBS_VFAM + OBS_FIELD);
+	const swapped =
+		hex.slice(0, OBS_FLAG) +
+		'0' +
+		hex.slice(OBS_FLAG + 1, OBS_KCHAR) +
+		victim_pair.slice(0, OBS_FIELD) +
+		hex.slice(OBS_KCHAR + OBS_FIELD, OBS_KFAM) +
+		victim_pair.slice(OBS_FIELD) +
+		hex.slice(OBS_KFAM + OBS_FIELD, OBS_VCHAR) +
+		killer_pair.slice(0, OBS_FIELD) +
+		hex.slice(OBS_VCHAR + OBS_FIELD, OBS_VFAM) +
+		killer_pair.slice(OBS_FIELD) +
+		hex.slice(OBS_VFAM + OBS_FIELD);
+	return {
+		...log,
+		hex: swapped,
+		names: log.names.map((n, i) => {
+			if (i === 0) return { ...log.names[2], offset: n.offset };
+			if (i === 1) return { ...log.names[3], offset: n.offset };
+			if (i === 2) return { ...log.names[0], offset: n.offset };
+			if (i === 3) return { ...log.names[1], offset: n.offset };
+			return n;
+		})
+	};
+}
 
 // ── Remote registry ─────────────────────────────────────────────────────────
 // cogm.app serves the same table at /api/logger/packet-registry so a new-patch
