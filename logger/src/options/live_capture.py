@@ -135,7 +135,15 @@ _packets_seen = 0
 _DIAG_SAMPLE_CAP = 300
 _DIAG_SUMMARY_EVERY = 500
 
-identifier_regex = r"[56][0-9a-f]0100[0-9a-f]{4}"
+# Anchor widened 2026-08-14: the post-patch own-war kill record carries tag
+# 72 01 00 fe 1a (same XX 01 00 YY 1a family as every pre-patch opcode, but
+# byte0 sits outside the old 0x50-0x6f class). Verified byte-identical on NA
+# and SA servers the night of the patch. The EXACT literal is added rather
+# than widening the byte0 class: both [567] and 72-with-any-suffix admitted
+# stray anchors in the July control war that shifted the multi-match
+# disambiguation around real kills (one lost, one doubled). The full 10-hex
+# literal cannot collide by chance and leaves pre-patch decoding untouched.
+identifier_regex = r"(?:[56][0-9a-f]0100[0-9a-f]{4}|720100fe1a)"
 
 # ── 2026-08-13 patch: the second kill format ─────────────────────────────────
 # The August 13 game update replaced the 5-name fixed-offset kill packet with a

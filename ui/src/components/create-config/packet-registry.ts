@@ -54,6 +54,16 @@ export const KNOWN_PACKETS: Record<string, PacketConfig> = {
 	// byte in the packet. Calibrated from a RAT raw session (100% roster
 	// anchoring on col3); direction matches the heuristic decode (704/410).
 	'640100d61c': { name_order: { killer: 3, victim: 4, guild: 1 }, kill: 143 },
+	// 2026-08-13 patch: the own-war kill record, identical on NA and SA
+	// servers. Tag 72 01 00 fe 1a (same XX 01 00 YY 1a family as every
+	// pre-patch opcode; the capture engine's byte0 class was widened to
+	// [0x50-0x7f] in 1.33.1 to anchor it). Subject-centric like all
+	// pre-patch packets: col0 enemy guild, col1 subject char, col2 enemy
+	// char, col3 subject family, col4 enemy family; direction flag at byte
+	// 67 (hex char 135), '1' = subject killed. Calibrated against a full
+	// node-war result board (kill-share correlation r=0.82; the 2K/29D and
+	// 0-kill extremes decode exactly).
+	'720100fe1a': { name_order: { killer: 3, victim: 4, guild: 0 }, kill: 135 },
 	// 2026-08-13 game update: marker-based OBSERVER records replace the
 	// 5-name fixed-offset packet (docs/patch-2026-08-13-new-kill-format.md).
 	// The capture engine finds the two identity blocks by scanning for
