@@ -76,10 +76,20 @@ export async function find_last_session(): Promise<RecoverableSession | null> {
 		}
 	}
 	if (!newest) return null;
+	return load_session(newest.path);
+}
 
+/**
+ * Parse one on-disk session file (raw engine lines) into logs, with the same
+ * reframe / orientation / dedup the live view applies. Used by the recover
+ * flow and by History's open action; works on session-*.log and on the
+ * raw-*.log copies a Save/Upload leaves behind, since both hold the same
+ * line format.
+ */
+export async function load_session(path: string): Promise<RecoverableSession | null> {
 	let content: string;
 	try {
-		content = await filesystem.readFile(newest.path);
+		content = await filesystem.readFile(path);
 	} catch {
 		return null;
 	}
@@ -100,5 +110,61 @@ export async function find_last_session(): Promise<RecoverableSession | null> {
 	}
 
 	if (logs.length === 0) return null;
-	return { path: newest.path, logs };
+	return { path, logs };
+}
+
+export type SessionEntry = {
+	path: string;
+	filename: string;
+	mtime: number;
+	size: number;
+	/** True for the raw-*.log copies left behind by Save / Upload — the war
+	 * was preserved somewhere else already. session-*.log means never saved. */
+	saved: boolean;
+};
+
+/**
+ * Every session on disk, newest first: unsaved session-*.log files plus the
+ * raw-*.log copies that Save/Upload leave behind. The two prefixes are the
+ * whole "was this war saved?" bookkeeping — no separate store to drift.
+ */
+export async function list_sessions(): Promise<SessionEntry[]> {
+	// Same dirs the recover banner scans, so a legacy pre-1.14 session offered
+	// there doesn't vanish from History.
+	const dirs = [await get_capture_dir(), 'logger/.tmp'];
+	const out: SessionEntry[] = [];
+	for (const dir of dirs) {
+		let entries: { entry: string; type: string }[];
+		try {
+			entries = await filesystem.readDirectory(dir);
+		} catch {
+			continue;
+		}
+		const dir_sep = dir.includes('\\') ? '\\' : '/';
+		for (const e of entries) {
+			if (e.type !== 'FILE' || !e.entry.endsWith('.log')) continue;
+			// The engine writes a session-<ts>.diag.log diagnostics sidecar next
+			// to every session; it's not a war.
+			if (e.entry.endsWith('.diag.log')) continue;
+			const saved = e.entry.startsWith('raw-');
+			if (!saved && !e.entry.startsWith('session-')) continue;
+			const path = `${dir}${dir_sep}${e.entry}`;
+			try {
+				const stats = await filesystem.getStats(path);
+				// A kill-less recording leaves a 0-byte file; nothing to open.
+				if ((stats.size ?? 0) === 0) continue;
+				out.push({
+					path,
+					filename: e.entry,
+					mtime: stats.modifiedAt ?? 0,
+					size: stats.size ?? 0,
+					saved
+				});
+			} catch {
+				/* skip unreadable */
+			}
+		}
+	}
+	out.sort((a, b) => b.mtime - a.mtime);
+	return out;
 }

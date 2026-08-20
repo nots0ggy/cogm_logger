@@ -53,5 +53,55 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}";IconFilen
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}";IconFilename: "{app}\{#MyAppIcoName}"; Tasks: desktopicon
 
 [Run]
+; Install the capture driver when it's missing, before the app launches. Free
+; Npcap has no silent install, so its own wizard shows (the defaults are
+; correct, including WinPcap API-compatible mode).
+Filename: "{tmp}\npcap-1.87.exe"; StatusMsg: "Installing the Npcap packet capture driver..."; Check: NpcapDownloaded; Flags: waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent runascurrentuser
+
+[Code]
+{ Npcap is fetched from npcap.com DURING install rather than bundled: the
+  Npcap Free license allows end users to download it but forbids
+  redistributing the installer inside third-party setups (that right is the
+  paid OEM edition). The download is SHA256-pinned, and an offline or failed
+  download degrades to the old flow — the app itself links the download on
+  its home screen when the driver is missing. }
+
+const
+  NpcapUrl = 'https://npcap.com/dist/npcap-1.87.exe';
+  NpcapSha256 = '142c234f09a9618d7cdc2c37f607d6fc06615fad5581f728b60d4ad659f906bd';
+
+var
+  NpcapFetched: Boolean;
+
+{ The Services registry key is shared (no WOW64 redirection), unlike
+  System32\drivers, which a 32-bit installer process reads as SysWOW64 and
+  would call Npcap missing on every 64-bit machine. npf covers a legacy
+  WinPcap install that scapy can also drive; don't force Npcap over it. }
+function NpcapNeeded: Boolean;
+begin
+  Result := not RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\npcap')
+    and not RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\npf');
+end;
+
+function NpcapDownloaded: Boolean;
+begin
+  Result := NpcapFetched and FileExists(ExpandConstant('{tmp}\npcap-1.87.exe'));
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssInstall) and NpcapNeeded then
+  begin
+    try
+      DownloadTemporaryFile(NpcapUrl, 'npcap-1.87.exe', NpcapSha256, nil);
+      NpcapFetched := True;
+    except
+      { Offline or blocked: continue without the driver; the app's home
+        screen shows the install link the moment it detects it missing. }
+      Log('Npcap download failed: ' + GetExceptionMessage);
+      NpcapFetched := False;
+    end;
+  end;
+end;
 

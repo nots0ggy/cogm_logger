@@ -5,7 +5,8 @@
 	import { onMount } from 'svelte';
 	import LoadingIndicator from '../svelte-ui/elements/loading-indicator.svelte';
 	import { check_status, type LoggerStatus } from '../logic/logger-status';
-	import { start_logger, stop_logger } from '../logic/logger-wrapper';
+	import { start_logger, stop_logger, kill_logger_process } from '../logic/logger-wrapper';
+	import { suspend_hotkey_listener } from '../logic/hotkey';
 	import { find_last_session } from '../logic/recover';
 	import GoMarkGithub from 'svelte-icons/go/GoMarkGithub.svelte';
 	import Icon from '../svelte-ui/elements/icon.svelte';
@@ -58,6 +59,11 @@
 	async function update() {
 		updating = true;
 		update_failed = false;
+		// Children survive app.exit(), and the idle hotkey listener holds
+		// {app}\logger\logger.exe open — an orphan would hold that lock against
+		// the very installer this hands off to. Same sweep windowClose does.
+		await suspend_hotkey_listener().catch(() => {});
+		await kill_logger_process().catch(() => {});
 		try {
 			if (full_update_available) {
 				os.execCommand(`update.bat ${version}`, { background: true });
@@ -190,7 +196,7 @@
 			<span class="text-caption text-gold">Npcap required to capture</span>
 			<button
 				class="text-caption text-gold underline hover:text-gold-200 transition-colors"
-				on:click={() => os.open('https://npcap.com/dist/npcap-1.78.exe')}
+				on:click={() => os.open('https://npcap.com/dist/npcap-1.87.exe')}
 			>
 				Download
 			</button>
@@ -286,8 +292,9 @@
 	</div>
 
 	<!-- Secondary CTAs -->
-	<div class="grid grid-cols-2 gap-3">
+	<div class="grid grid-cols-3 gap-3">
 		<Button color="secondary" on:click={() => goto('/open')}>Open</Button>
+		<Button color="secondary" on:click={() => goto('/history')}>History</Button>
 		<Button color="secondary" on:click={() => goto('/settings')}>Settings</Button>
 	</div>
 

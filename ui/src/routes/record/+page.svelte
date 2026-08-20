@@ -22,6 +22,7 @@
 		own_family_set
 	} from '../../components/create-config/packet-registry';
 	import { recording_state, recording_started_at, packets_seen } from '../../logic/recording-store';
+	import { page } from '$app/stores';
 	import { capture_path } from '../../logic/paths';
 	import StatusDot from '../../components/status-dot.svelte';
 	import Button from '../../svelte-ui/elements/button.svelte';
@@ -45,6 +46,11 @@
 	// Set when the capture engine reports a classified startup failure
 	// (CAPTURE_ERROR). Drives the recovery panel below.
 	let capture_error: { code: string; message: string } | null = null;
+	// Arrived via the global hotkey (?hotkey=1): the user is in the game and
+	// can't see this window, so capture health gets a Windows notification —
+	// fired on the first healthy engine line, never optimistically.
+	let notify_capture_health = false;
+	let start_notified = false;
 	let recovering = false;
 	// Path of the full-packet .pcap when that capture is enabled, surfaced so
 	// the user can find the file and send it in for protocol research.
@@ -57,8 +63,10 @@
 	function build_flags(cfg: Config): string {
 		// -r is always on: the full pcap is captured automatically (not a setting),
 		// so the raw bytes are always there for recalibration. cfg is still read
-		// for the interface and IP-filter flags.
-		return (cfg.all_interfaces ? '-i' : '') + (cfg.ip_filter ? ' -p' : '') + ' -r';
+		// for the interface and IP-filter flags. The hotkey rides along so the
+		// same key that started the war can stop it without alt-tabbing.
+		const hotkey = NL_OS === 'Windows' && cfg.hotkey ? ` --hotkey ${cfg.hotkey}` : '';
+		return (cfg.all_interfaces ? '-i' : '') + (cfg.ip_filter ? ' -p' : '') + ' -r' + hotkey;
 	}
 
 	function spawn_args(): string {
@@ -92,11 +100,29 @@
 				const parts = data.split('|');
 				capture_error = { code: parts[1] ?? 'UNKNOWN', message: parts.slice(2).join('|') };
 				recording_state.set('error');
+				if (notify_capture_health && !start_notified) {
+					start_notified = true;
+					os.showNotification('CoGM Logger', 'Recording failed to start. Open the app.').catch(() => {});
+				}
+				return;
+			}
+			// Global hotkey pressed mid-war: stop and go home. No confirm — the
+			// combo (Ctrl+Shift+F-key) is deliberate, and the session file plus
+			// History make a mistaken stop recoverable.
+			if (data.trim() === 'HOTKEY') {
+				os.showNotification('CoGM Logger', 'Recording stopped. Session saved.').catch(() => {});
+				goto('/');
 				return;
 			}
 			// Full-packet capture path, so the user can find and share the file.
+			// Also the first healthy engine line, which is what makes a
+			// hotkey-started recording's notification honest.
 			if (data.startsWith('Saving pcap to ')) {
 				pcap_path = data.slice('Saving pcap to '.length).trim();
+				if (notify_capture_health && !start_notified) {
+					start_notified = true;
+					os.showNotification('CoGM Logger', 'Recording started').catch(() => {});
+				}
 				return;
 			}
 			packets_seen.update((n) => n + 1);
@@ -172,6 +198,7 @@
 	};
 
 	onMount(async () => {
+		notify_capture_health = $page.url.searchParams.get('hotkey') === '1';
 		config = await get_config();
 		own_families = own_family_set(await get_cogm_roster());
 		// Documents/CoGM Logger/session-<ts>.log. The engine derives the .pcap
@@ -200,6 +227,38 @@
 		goto('/');
 	}
 
+	// Two wars in one sitting used to merge into one upload because the log
+	// buffer only ever grew. New war closes the current session (its file stays
+	// on disk, reopenable from History) and starts a clean one in place.
+	let splitting = false;
+	async function handle_new_war() {
+		if (splitting) return;
+		if (
+			logs.length > 0 &&
+			!confirm(
+				'Start a new war?\n\nThe current session stays saved and can be reopened from History.'
+			)
+		) {
+			return;
+		}
+		splitting = true;
+		try {
+			await stop_logger();
+			logs = [];
+			seen_logs.clear();
+			capture_error = null;
+			retry_count = 0;
+			pcap_path = '';
+			session_path = await capture_path(`session-${Date.now()}.log`);
+			packets_seen.set(0);
+			recording_started_at.set(Date.now());
+			recording_state.set('recording');
+			start_logger(logger_callback, 'analyze', spawn_args());
+		} finally {
+			splitting = false;
+		}
+	}
+
 	// Recovery actions for a classified capture failure.
 	function retry_capture() {
 		capture_error = null;
@@ -220,7 +279,7 @@
 	}
 
 	async function handle_install_npcap() {
-		await os.open('https://npcap.com/dist/npcap-1.78.exe');
+		await os.open('https://npcap.com/dist/npcap-1.87.exe');
 	}
 
 	// Reveal the full-packet .pcap in the file manager so it's easy to attach
@@ -319,6 +378,16 @@
 	<span class="text-caption tabular-nums">{logs.length} logs</span>
 
 	<div class="ml-auto flex items-center gap-2">
+		{#if logs.length > 0}
+			<button
+				class="px-3 py-1 text-xs font-medium rounded bg-background-secondary border border-gray-700 text-foreground hover:border-gray-500 transition-colors"
+				on:click={handle_new_war}
+				disabled={splitting}
+				title="Close this session and start a fresh one, so back-to-back wars upload separately"
+			>
+				{splitting ? 'Starting…' : 'New war'}
+			</button>
+		{/if}
 		<button
 			class="px-3 py-1 text-xs font-medium rounded bg-background-secondary border border-gray-700 text-foreground hover:border-gray-500 transition-colors"
 			on:click={handle_stop}

@@ -1,6 +1,6 @@
 {
 	"applicationId": "ikusa.logger",
-	"version": "1.33.1",
+	"version": "1.34.0",
 	"defaultMode": "window",
 	"documentRoot": "/ui/build/",
 	"url": "/",
@@ -24,6 +24,7 @@
 		"os.execCommand",
 		"os.getPath",
 		"os.getEnv",
+		"os.showNotification",
 		"clipboard.writeText",
 		"storage.setData",
 		"storage.getData"

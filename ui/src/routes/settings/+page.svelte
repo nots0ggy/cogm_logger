@@ -17,12 +17,18 @@
 	import Button from '../../svelte-ui/elements/button.svelte';
 	import { app, os, storage } from '@neutralinojs/lib';
 	import { dev } from '$app/environment';
+	import { set_hotkey_listener, default_hotkey_action } from '../../logic/hotkey';
 	import { show_toast } from '../../svelte-ui/util';
 
 	let config: Config;
 
 	let selected_interface = 0;
 	let ip_filter = false;
+	// Global record hotkey: index into HOTKEY_OPTIONS (0 = off). Fixed
+	// Ctrl+Shift modifiers; the value stored in config is the F-key name.
+	const HOTKEY_OPTIONS = ['Off', 'Ctrl+Shift+F5', 'Ctrl+Shift+F6', 'Ctrl+Shift+F7', 'Ctrl+Shift+F8', 'Ctrl+Shift+F9', 'Ctrl+Shift+F10', 'Ctrl+Shift+F11', 'Ctrl+Shift+F12'];
+	const HOTKEY_KEYS = ['', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'];
+	let hotkey_index = 0;
 	let live_output_path = '';
 	let personal_family_name = '';
 	let initial_load_done = false;
@@ -81,6 +87,16 @@
 			// local copy stays stale and the next save spreads the old value,
 			// silently reverting this toggle.
 			config = await update_config({ ...config, all_interfaces: selected_interface == 0 });
+		}
+	}
+
+	async function update_hotkey() {
+		if (config) {
+			const key = HOTKEY_KEYS[hotkey_index] ?? '';
+			config = await update_config({ ...config, hotkey: key });
+			// The idle listener re-keys on the spot; no restart needed. Same
+			// action the layout wires, so the two can never diverge.
+			await set_hotkey_listener(NL_OS === 'Windows' ? key : '', default_hotkey_action);
 		}
 	}
 
@@ -263,6 +279,10 @@
 		selected_interface =
 			config.all_interfaces === true || config.all_interfaces === undefined ? 0 : 1;
 		ip_filter = config.ip_filter === true || config.ip_filter === undefined ? true : false;
+		{
+			const idx = HOTKEY_KEYS.indexOf(config.hotkey ?? 'F9');
+			hotkey_index = idx >= 0 ? idx : 0;
+		}
 		live_output_path = config.live_output_path || '';
 		personal_family_name = (await storage.getData(PERSONAL_FAMILY_NAME_KEY).catch(() => '')) || '';
 		cogm_token = config.cogm_token || '';
@@ -323,6 +343,20 @@
 			</div>
 			<Toggle bind:checked={ip_filter} />
 		</div>
+
+		{#if NL_OS === 'Windows'}
+			<div class="grid grid-cols-[1fr_auto] gap-3 items-center mt-3">
+				<div>
+					<p class="text-foreground">Record hotkey</p>
+					<p class="text-caption">Start or stop recording from inside the game</p>
+				</div>
+				<Select
+					options={HOTKEY_OPTIONS}
+					bind:selected_value={hotkey_index}
+					on_change={update_hotkey}
+				/>
+			</div>
+		{/if}
 
 		<!-- OUTPUT -->
 		<div class="divider-top">

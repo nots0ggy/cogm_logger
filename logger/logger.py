@@ -42,9 +42,18 @@ parser.add_argument("-F", "--full",
                     help="Capture the full raw payload of all BDO traffic (pcap + jsonl) for protocol research", action= BooleanOptionalAction)
 parser.add_argument("-t", "--testCapture",
                     help="Pre-war self-test: confirm the running game's traffic is visible to the capture path", action= BooleanOptionalAction)
+parser.add_argument("-k", "--hotkey",
+                    default="",
+                    help="Watch Ctrl+Shift+<KEY> (F5-F12) globally and print HOTKEY on press. Standalone: idle listener process. Combined with -a: also stops the war without alt-tabbing.")
 
 
-args = parser.parse_args()
+# Unknown flags are ignored, not fatal. The UI updates separately from this
+# binary (a patch-level update swaps resources.neu only), so a newer UI may
+# pass a flag this build doesn't know — that must degrade the feature, never
+# kill the capture spawn with an argparse exit.
+args, _unknown_args = parser.parse_known_args()
+if _unknown_args:
+    print("IGNORED_ARGS " + " ".join(_unknown_args), flush=True)
 
 config.init("config.ini")
 
@@ -82,6 +91,11 @@ elif args.analyze and args.filename != None:
     analyze.open_pcap(args.filename, args.output, args.ipFilter, None)
     exit()
 elif args.analyze:
+    # Same key that started the recording stops it: the UI reads the HOTKEY
+    # line off this process's stdout mid-capture.
+    if args.hotkey:
+        from src.options import hotkey
+        hotkey.start_hotkey_thread(args.hotkey)
     analyze.start_sniff(args.output, args.allInterfaces, args.ipFilter, pcap_path)
     exit()
 elif args.record:
@@ -89,6 +103,12 @@ elif args.record:
     exit()
 elif args.filename != None:
     open.open_pcap(args.filename, args.output)
+    exit()
+elif args.hotkey:
+    # Idle listener: the UI keeps one of these alive while nothing records, so
+    # the hotkey can START a war from the game. Runs until killed.
+    from src.options import hotkey
+    hotkey.run_hotkey_listener(args.hotkey)
     exit()
 else:
     sniff.start_sniff(args.output)

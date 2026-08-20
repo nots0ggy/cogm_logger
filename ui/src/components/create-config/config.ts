@@ -48,6 +48,10 @@ export type Config = {
 	cogm_url: string;
 	cogm_token: string;
 	cogm_guild: string;
+	// Global record hotkey: an F-key name ('F5'..'F12', fixed Ctrl+Shift
+	// modifiers) or '' for off. Starts a recording from inside the game and
+	// stops the one that's running.
+	hotkey: string;
 	// Which captured column is the Killer / Victim / Guild, as column indices
 	// (0-4). Persisted so the order set in one war (or in Settings) applies to
 	// the next. Defaults to 0/1/2, which is the long-standing positional order.
@@ -174,6 +178,15 @@ export async function get_config(): Promise<Config> {
 		if (parsed.cogm_guild === undefined) {
 			parsed.cogm_guild = '';
 		}
+		{
+			// Allowlist, not just a default: this value is interpolated into two
+			// spawn command lines, and an invalid key would churn the listener
+			// respawn loop while Settings displayed 'Off'.
+			const valid = ['', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'];
+			if (typeof parsed.hotkey !== 'string' || !valid.includes(parsed.hotkey)) {
+				parsed.hotkey = 'F9';
+			}
+		}
 		if (
 			parsed.name_order === undefined ||
 			typeof parsed.name_order.killer !== 'number' ||
@@ -201,6 +214,7 @@ export async function get_config(): Promise<Config> {
 			cogm_url: 'https://cogm.app',
 			cogm_token: '',
 			cogm_guild: '',
+			hotkey: 'F9',
 			name_order: { killer: 0, victim: 1, guild: 2 }
 		};
 	}

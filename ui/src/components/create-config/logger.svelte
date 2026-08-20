@@ -52,6 +52,14 @@
 
 	async function clear_session() {
 		if (!session_path) return;
+		// A History re-open of an already-saved raw- copy: that file IS the
+		// preserved evidence, so a re-save/re-upload must neither re-stash nor
+		// delete it. Just detach so the editor state clears.
+		const base = session_path.split(/[\\/]/).pop() || '';
+		if (base.startsWith('raw-')) {
+			session_path = null;
+			return;
+		}
 		// TEMPORARY (remove once the kill offset is locked in): before deleting the
 		// raw session, stash a copy alongside it (raw-<name>) so a Save/Upload
 		// doesn't destroy the per-event hex we need to recalibrate the kill byte.
@@ -881,12 +889,21 @@
 		| 'exhausted' = 'idle';
 	let recovery_for: string | null = null;
 	// A cleared session (new recording / different file) must not inherit a
-	// previous war's override or calibration-sent guard.
+	// previous war's override or calibration-sent guard — nor its name-order
+	// detection state: a manual order set in war 1 would otherwise pin
+	// detect_source='manual' and block war 2's calibrated column map after a
+	// New war split.
 	$: if (logs.length === 0) {
 		kd_override = false;
 		calibration_sent_for = null;
 		recovery_for = null;
 		recovery_state = 'idle';
+		detect_source = '';
+		auto_detected = false;
+		registry_applied = null;
+		registry_overridden = false;
+		override_armed = false;
+		sample_saved = false;
 	}
 	$: upload_block = kd_sanity && !kd_override ? 'one-sided' : null;
 	// Shown, never blocking. True once recovery has genuinely run out of options,

@@ -65,12 +65,14 @@ let logger: os.SpawnedProcess | null = null;
 export type LoggerCallback = (data: string, status: 'running' | 'terminated' | 'stderr') => void;
 let callback: LoggerCallback | null = null;
 
-// Set by stop_logger, cleared at the start of start_logger. A reconnect
-// dispatches start_logger without awaiting it, and start_logger then awaits
-// ~1s on its kill before spawning; if stop_logger ran during that window
-// we must abort the spawn so a torn-down page doesn't leak a background
-// capture.
-let stopped = false;
+// Generation token. A reconnect dispatches start_logger without awaiting it,
+// and start_logger awaits ~1s on its kill before spawning; if stop_logger (or
+// a NEWER start_logger, e.g. the New war split) ran during that window, the
+// older spawn must abort or a torn-down page leaks a background capture — or
+// two engines append to different session files at once. The old boolean
+// (stopped) missed the second case: a newer start reset it to false and the
+// stale spawn went through.
+let epoch = 0;
 
 /**
  * Force-kill any lingering sniffer process. os.updateSpawnedProcess(id, 'exit')
@@ -98,7 +100,7 @@ export async function start_logger(
 	arg: keyof typeof arg_mapping,
 	data?: string
 ) {
-	stopped = false;
+	const my = ++epoch;
 	if (logger) {
 		try {
 			await os.updateSpawnedProcess(logger.id, 'exit');
@@ -132,10 +134,11 @@ export async function start_logger(
 		}
 	}
 
-	// stop_logger may have fired during the taskkill await above (a reconnect
-	// races with navigating away). Abort before spawning so we don't leak a
-	// detached capture and re-attach a stale callback.
-	if (stopped) {
+	// stop_logger or a newer start_logger may have fired during the taskkill
+	// await above (a reconnect races with navigating away, or with New war).
+	// Abort before spawning so we don't leak a detached capture, re-attach a
+	// stale callback, or run two engines against different session files.
+	if (my !== epoch) {
 		return;
 	}
 
@@ -154,7 +157,7 @@ export async function start_logger(
  * triggers doesn't reach a torn-down page.
  */
 export async function stop_logger() {
-	stopped = true;
+	epoch++;
 	callback = null;
 	events.off('spawnedProcess', handle_process);
 	const current = logger;
