@@ -410,6 +410,16 @@
 			.replaceAll(' ', '');
 	};
 
+	// Killer / victim / guild are enough to track a kill. Character slots
+	// (and coords) can be empty or garbled without dropping the engagement.
+	const COMBAT_NAME = /^[A-Za-z][A-Za-z0-9_]{1,15}$/;
+	function usable_combat_name(n: string) {
+		// 'Unknown' is the capture placeholder for a garbled column AND the
+		// observer-format guild field. Killer/victim must be a real name;
+		// guild may be Unknown (observer records carry no guild tag).
+		return typeof n === 'string' && n !== 'Unknown' && COMBAT_NAME.test(n);
+	}
+
 	// The resolved name in each captured column for the first kill, shown as
 	// chips in the name-order panel so you can see what was captured before
 	// assigning Killer/Victim/Guild. Empty columns show as a dash.
@@ -775,17 +785,22 @@
 		let output = '';
 
 		for (const log of logs) {
-			let characters = '';
-
 			const player_one_name = get_name(player_one_index, log);
 			const player_two_name = get_name(player_two_index, log);
 			const guild_name = get_name(guild_index, log);
+			if (!usable_combat_name(player_one_name) || !usable_combat_name(player_two_name))
+				continue;
+			if (!guild_name || (guild_name !== 'Unknown' && !usable_combat_name(guild_name)))
+				continue;
+			let characters = '';
 			if (config.include_characters) {
 				const remaining_indicies = [0, 1, 2, 3, 4].filter(
 					(i) => i !== player_one_index && i !== player_two_index && i !== guild_index
 				);
 				const remaining_names = remaining_indicies.map((i) => get_name(i, log));
-				characters = ` (${remaining_names.join(',')})`;
+				if (remaining_names.every(usable_combat_name)) {
+					characters = ` (${remaining_names.join(',')})`;
+				}
 			}
 
 			if (log.hex[possible_kill_offsets[kill_index]] === '1')
@@ -1205,7 +1220,8 @@
 				const player_two_name = get_name(player_two_index, log);
 				// An empty name means the column wasn't resolved; the matching .log
 				// line is unparseable too, so the coord could never bind — skip it.
-				if (!player_one_name || !player_two_name) continue;
+				if (!usable_combat_name(player_one_name) || !usable_combat_name(player_two_name))
+					continue;
 				out.push({
 					t: log.time,
 					k: is_kill ? player_one_name : player_two_name,

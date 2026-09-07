@@ -64,6 +64,10 @@ export const KNOWN_PACKETS: Record<string, PacketConfig> = {
 	// node-war result board (kill-share correlation r=0.82; the 2K/29D and
 	// 0-kill extremes decode exactly).
 	'720100fe1a': { name_order: { killer: 3, victim: 4, guild: 0 }, kill: 135 },
+	// 2026-09-04 NA layout (opcode 6c0100aa19). Families col4/col3, guild
+	// col2, leftover col0 enemy char / col1 subject char. Flag at hex char
+	// 395. Calibrated against Equinox 06.09 and Isolated 06.09 warscores.
+	'6c0100aa19': { name_order: { killer: 4, victim: 3, guild: 2 }, kill: 395 },
 	// 2026-08-13 game update: marker-based OBSERVER records replace the
 	// 5-name fixed-offset packet (docs/patch-2026-08-13-new-kill-format.md).
 	// The capture engine finds the two identity blocks by scanning for

@@ -62,14 +62,40 @@ current_position = 0
 # Record-level dedup. The same kill segment can be delivered more than once:
 # the same frame visible on two captured interfaces (VPN + physical NIC,
 # bridged/virtual switches) or a plain TCP retransmission. The parser is
-# stateless per delivery, so each copy used to emit an identical record and
-# every duplicated kill counted double. A kill record's full payload hex is
-# byte-identical across deliveries, so suppress repeats of the same payload
-# seen within a short window. Two DISTINCT kills are never byte-identical
-# (coords, counters and ids differ), so a 10s window cannot eat a real kill.
+# stateless per delivery, so without this every duplicated kill counts twice.
+#
+# This used to key on the full payload hex, on the assumption that a kill
+# record is byte-identical across deliveries. That assumption broke after the
+# 2026-08-13 patch: the record is emitted from a window of the reassembled
+# stream, and copies arrive carrying different amounts of trailing payload. A
+# reported war had ONE kill delivered three times at hex lengths 628, 748 and
+# 740 — same opcode, same second, same five names at the same offsets, three
+# different byte strings. Every copy therefore passed both this check and the
+# UI's, and 35-39% of that guild's kills were duplicates.
+#
+# So key on a HEAD-ANCHORED slice plus the five name fields instead of the
+# whole payload. Copies differ only in how much TRAILING payload they carry, so
+# a fixed head is identical across every delivery (verified: all 528 duplicate
+# groups in that war agree on their first 300 hex, while all 528 differ in
+# total length).
+#
+# The head has to reach the kill-direction flag, which is what actually
+# separates "I killed them" from "they killed me": the five names are the same
+# either way, so a names-only key deletes reciprocal trades (A kills B, B kills
+# A moments later). 68 such trades exist across 58 of 901 production wars. The
+# calibrated flag sits at hex index 15..265 depending on opcode, and this
+# engine has no per-opcode registry (that lives server-side), so the head runs
+# to 300 — past every known flag, short of where deliveries start to differ.
+# Names 4 and 5 sit beyond 300, hence appending them too.
+#
+# Window: measured on that war, all 532 duplicate deliveries landed in the SAME
+# second while the closest genuinely repeated kill between one pair was 24
+# seconds apart. A killer cannot kill the same player twice inside the respawn
+# timer, so 5s cannot eat a real kill and still catches copies that straddle a
+# second boundary.
 _recent_records = {}
 _RECENT_MAX = 4096
-_DEDUP_WINDOW_S = 10
+_DEDUP_WINDOW_S = 5
 _dups_suppressed = 0
 
 # Open recovery log file for the live session. start_sniff opens it once and
@@ -190,7 +216,78 @@ NEW_FAM_OFF_HEX = 71 * 2 - 10             # relative to char position
 #   every record IS a kill; direction is block order, killer first).
 NEW_BLOCK_HEX = 240                        # hex chars kept per identity block
 NEW_UNKNOWN_FIELD_HEX = "55006e006b006e006f0077006e00".ljust(64, "0")
-name_regex = r"^[A-Z][a-zA-Z0-9_]{2,15}$"
+# BDO family/char/guild names. Used to require a leading capital and 3–16
+# chars, which dropped real kills whose character slot was 2 letters, started
+# lowercase, or failed extract (non-ASCII / truncated) even when the two
+# families and the guild were sitting in the other columns. 2–16, either case.
+name_regex = r"^[A-Za-z][A-Za-z0-9_]{1,15}$"
+
+# Learned 5 column hex-offsets for this session, from the first clean 5-name
+# record. Incomplete records are slotted onto this layout so a garbled
+# character column does not drop a kill that still has killer/victim/guild.
+# Reset per session with the other capture state.
+_name_slots = None
+
+
+def _parse_scanned_name(field):
+    name, _, off = field.rpartition(" ")
+    return name, int(off)
+
+
+def _is_real_name(name):
+    return name != "Unknown" and bool(re.match(name_regex, name))
+
+
+def _real_name_count(fields):
+    n = 0
+    for f in fields:
+        if _is_real_name(f.rsplit(" ", 1)[0]):
+            n += 1
+    return n
+
+
+def _fit_names_to_slots(names, name_window):
+    """Return 5 'name offset' fields, or None if this candidate is not a kill.
+
+    The scan used to require all five columns to pass the regex, so a garbled
+    character slot dropped the whole engagement. Killer, victim, and guild are
+    enough to track the kill; character names and coords are optional. Once a
+    5-name record has taught us the column offsets, 3–4 name hits are placed
+    on the nearest slot (±8 hex) and holes become 'Unknown'. The UI then
+    keeps the line only when killer/victim/guild specifically decoded.
+    """
+    global _name_slots
+    parsed = [_parse_scanned_name(f) for f in names]
+    parsed.sort(key=lambda x: x[1])
+    if len(parsed) == 5:
+        _name_slots = [o for _, o in parsed]
+        return [f"{n} {o}" for n, o in parsed]
+    if _name_slots is None or len(parsed) < 3:
+        return None
+    used = set()
+    out = []
+    for slot in _name_slots:
+        best = None
+        bestd = 9
+        for i, (n, o) in enumerate(parsed):
+            if i in used:
+                continue
+            d = abs(o - slot)
+            if d <= 8 and d < bestd:
+                best = i
+                bestd = d
+        if best is not None:
+            used.add(best)
+            out.append(f"{parsed[best][0]} {slot}")
+            continue
+        raw = extract_string(name_window, slot, 64)
+        if isinstance(raw, str) and _is_real_name(raw):
+            out.append(f"{raw} {slot}")
+        else:
+            out.append(f"Unknown {slot}")
+    if _real_name_count(out) < 3:
+        return None
+    return out
 
 # War-server IPs learned this session. A source locks in after it produces
 # _LOCK_THRESHOLD parsed kill records — one record could conceivably be a
@@ -501,10 +598,11 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
             # Name detection must stay on exactly the first 600 hex. The five
             # names live there, and scanning into the 600-726 tail lets a string
             # in that region (or the coordinate bytes) register as a spurious
-            # sixth name, which makes len(names) != 5 and silently drops every
-            # such kill (the "0 logs" regression). name_window keeps detection
-            # byte-identical to the proven pre-coords behaviour; possible_log
-            # only widens what we ship downstream.
+            # sixth name, which used to make len(names) != 5 and silently drop
+            # every such kill (the "0 logs" regression). Incomplete 3–4 name
+            # hits are now slotted onto the learned 5-column layout instead of
+            # dropped. name_window keeps detection on the first 600 hex;
+            # possible_log only widens what we ship downstream.
             if len(payload) >= 600:
                 # 1600 hex (800 bytes), widened from 726 on 2026-08-07. The
                 # patch packet 6a0100ce0b stopped carrying the FIELDED character
@@ -534,14 +632,19 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
                 # "0 logs" session leaves evidence of how the kills degraded
                 # (best-effort, no-op when the diag file isn't open).
                 _diag_record(len(names), names, possible_log, package)
-                if len(names) == 5:
+                fitted = _fit_names_to_slots(names, name_window)
+                if fitted:
+                    names = fitted
                     # Duplicate delivery of the same kill segment (second
-                    # interface or TCP retransmission): identical payload seen
-                    # moments ago. Skip the emit AND the server-lock counting so
-                    # a duplicated fluke can't help a false lock either.
+                    # interface or TCP retransmission). Keyed on the stable head
+                    # plus the names rather than the whole payload, which varies
+                    # per delivery (see _recent_records). Skip the emit AND the
+                    # server-lock counting so a duplicated fluke can't help a
+                    # false lock either.
                     now_ts = float(package.time)
-                    seen_ts = _recent_records.get(possible_log)
-                    _recent_records[possible_log] = now_ts
+                    record_key = payload[0:300] + "|" + ",".join(names)
+                    seen_ts = _recent_records.get(record_key)
+                    _recent_records[record_key] = now_ts
                     if len(_recent_records) > _RECENT_MAX:
                         cutoff = now_ts - _DEDUP_WINDOW_S
                         for k in list(_recent_records):
@@ -599,6 +702,7 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
 
 def open_pcap(file, output, ip_filter=True, record_pcap_path=None):
     global _locked_ips, _lock_counts, _stream_tails, _new_tails, _recent_records, _dups_suppressed
+    global _name_slots
     if file != None and not os.path.isfile(file):
         print("Invalid file", flush=True)
         return
@@ -610,6 +714,7 @@ def open_pcap(file, output, ip_filter=True, record_pcap_path=None):
     _new_tails = {}
     _recent_records = {}
     _dups_suppressed = 0
+    _name_slots = None
     print("Reading " + file, flush=True)
     if os.name == "nt":
         print("Loading file into ram. This may take a while.", flush=True)
@@ -689,6 +794,7 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
     # deliver anything" check always reads 0, and a capture that worked is
     # reported as a dead driver.
     global _packets_seen, _stream_tails, _new_tails, _recent_records, _dups_suppressed
+    global _name_slots
     try:
         print("Reading Network...", flush=True)
         # Fresh server lock + reassembly/dedup state per session (see the
@@ -699,6 +805,7 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
         _new_tails = {}
         _recent_records = {}
         _dups_suppressed = 0
+        _name_slots = None
         if record_pcap_path is not None:
             # Absolute path so the UI can show the user exactly where the
             # full-packet capture lands (for sharing it in for research).
