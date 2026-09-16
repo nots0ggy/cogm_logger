@@ -68,6 +68,11 @@ export const KNOWN_PACKETS: Record<string, PacketConfig> = {
 	// col2, leftover col0 enemy char / col1 subject char. Flag at hex char
 	// 395. Calibrated against Equinox 06.09 and Isolated 06.09 warscores.
 	'6c0100aa19': { name_order: { killer: 4, victim: 3, guild: 2 }, kill: 395 },
+	// 2026-09-14 NA layout (opcode 6601003e14). Families col3 (subject) /
+	// col4 (enemy), guild col2, leftover col0 enemy char / col1 subject char.
+	// Flag at hex char 10 (byte 5), 1 = subject killed. Calibrated against
+	// RAT 14.09 (1236 records: 659 kills / 577 deaths, flag splits cleanly).
+	'6601003e14': { name_order: { killer: 3, victim: 4, guild: 2 }, kill: 10 },
 	// 2026-08-13 game update: marker-based OBSERVER records replace the
 	// 5-name fixed-offset packet (docs/patch-2026-08-13-new-kill-format.md).
 	// The capture engine finds the two identity blocks by scanning for

@@ -222,11 +222,16 @@ NEW_UNKNOWN_FIELD_HEX = "55006e006b006e006f0077006e00".ljust(64, "0")
 # families and the guild were sitting in the other columns. 2–16, either case.
 name_regex = r"^[A-Za-z][A-Za-z0-9_]{1,15}$"
 
-# Learned 5 column hex-offsets for this session, from the first clean 5-name
-# record. Incomplete records are slotted onto this layout so a garbled
+# Learned 5 column hex-offsets for this session, from the first *clean*
+# 5-name record. Incomplete records slot onto that layout so a garbled
 # character column does not drop a kill that still has killer/victim/guild.
+#
+# These used to be rewritten on EVERY 5-name hit. RAT 14.09 started with
+# 5x0100/6x0100 junk (`ad`×5, `V9`/`A9`/`r9`) that stole the slots before
+# the real 6601003e14 kills landed. Lock once; junk cannot retune the war.
 # Reset per session with the other capture state.
 _name_slots = None
+_locked_opcode = None
 
 
 def _parse_scanned_name(field):
@@ -246,27 +251,48 @@ def _real_name_count(fields):
     return n
 
 
-def _fit_names_to_slots(names, name_window):
-    """Return 5 'name offset' fields, or None if this candidate is not a kill.
+def _is_junk_opcode(opcode):
+    """True for the empty-suffix 5x/6x tags that are not kill records.
 
-    The scan used to require all five columns to pass the regex, so a garbled
-    character slot dropped the whole engagement. Killer, victim, and guild are
-    enough to track the kill; character names and coords are optional. Once a
-    5-name record has taught us the column offsets, 3–4 name hits are placed
-    on the nearest slot (±8 hex) and holes become 'Unknown'. The UI then
-    keeps the line only when killer/victim/guild specifically decoded.
+    RAT 14.09 raw: 65010000ff, 5d01000000, 6601000000, 5201000000. The
+    identifier wildcard matches them; they are not 6601003e14.
     """
-    global _name_slots
-    parsed = [_parse_scanned_name(f) for f in names]
-    parsed.sort(key=lambda x: x[1])
-    if len(parsed) == 5:
-        _name_slots = [o for _, o in parsed]
-        return [f"{n} {o}" for n, o in parsed]
-    if _name_slots is None or len(parsed) < 3:
-        return None
+    if not opcode or len(opcode) < 10:
+        return False
+    return opcode[6:10].lower() in ("0000", "00ff")
+
+
+def _is_clean_lock_five(parsed):
+    """First-lock bar. Must not reject a real kill whose family==character.
+
+    Howyyy/Derakhil/DIDDY/Derakhil/Howyyy is 3 distinct names, all >=3
+    chars — that is a real kill. ad×5 and V9/A9/r9 are not.
+    """
+    if len(parsed) != 5:
+        return False
+    names = [n for n, _ in parsed]
+    if any(not _is_real_name(n) for n in names):
+        return False
+    if len(set(names)) < 3:
+        return False
+    if sum(1 for n in names if len(n) >= 3) < 3:
+        return False
+    return True
+
+
+def _offsets_match_slots(parsed, slots):
+    if len(parsed) != 5 or not slots or len(slots) != 5:
+        return False
+    for (_n, off), slot in zip(parsed, slots):
+        if abs(off - slot) > 8:
+            return False
+    return True
+
+
+def _place_on_slots(parsed, name_window, slots):
     used = set()
     out = []
-    for slot in _name_slots:
+    for slot in slots:
         best = None
         bestd = 9
         for i, (n, o) in enumerate(parsed):
@@ -288,6 +314,47 @@ def _fit_names_to_slots(names, name_window):
     if _real_name_count(out) < 3:
         return None
     return out
+
+
+def _fit_names_to_slots(names, name_window, opcode=""):
+    """Return 5 'name offset' fields, or None if this candidate is not a kill.
+
+    The scan used to require all five columns to pass the regex, so a garbled
+    character slot dropped the whole engagement. Killer, victim, and guild are
+    enough to track the kill; character names and coords are optional. Once a
+    clean 5-name record has taught us the column offsets, 3–4 name hits are
+    placed on the nearest slot (±8 hex) and holes become 'Unknown'. The UI
+    then keeps the line only when killer/victim/guild specifically decoded.
+    """
+    global _name_slots, _locked_opcode
+    parsed = [_parse_scanned_name(f) for f in names]
+    parsed.sort(key=lambda x: x[1])
+    op = (opcode or "")[:10].lower()
+
+    if _name_slots is None:
+        if _is_junk_opcode(op) or not _is_clean_lock_five(parsed):
+            return None
+        _name_slots = [o for _, o in parsed]
+        _locked_opcode = op or None
+        return [f"{n} {o}" for n, o in parsed]
+
+    if _is_junk_opcode(op):
+        return None
+
+    # Same layout as the lock: emit even when a later character is 2 letters.
+    if len(parsed) == 5 and _offsets_match_slots(parsed, _name_slots):
+        return [f"{n} {slot}" for (n, _o), slot in zip(parsed, _name_slots)]
+
+    # Five names at different offsets are a different packet (the 14.09
+    # `ad`/`V9` hits), not a missing character column. Do not re-extract
+    # at the locked slots from that window — leftover UTF-16 in junk
+    # payloads can look like names.
+    if len(parsed) == 5:
+        return None
+
+    if len(parsed) < 3:
+        return None
+    return _place_on_slots(parsed, name_window, _name_slots)
 
 # War-server IPs learned this session. A source locks in after it produces
 # _LOCK_THRESHOLD parsed kill records — one record could conceivably be a
@@ -632,7 +699,7 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
                 # "0 logs" session leaves evidence of how the kills degraded
                 # (best-effort, no-op when the diag file isn't open).
                 _diag_record(len(names), names, possible_log, package)
-                fitted = _fit_names_to_slots(names, name_window)
+                fitted = _fit_names_to_slots(names, name_window, payload[0:10])
                 if fitted:
                     names = fitted
                     # Duplicate delivery of the same kill segment (second
@@ -700,14 +767,9 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
         _stream_tails[package_src] = tail
 
 
-def open_pcap(file, output, ip_filter=True, record_pcap_path=None):
-    global _locked_ips, _lock_counts, _stream_tails, _new_tails, _recent_records, _dups_suppressed
-    global _name_slots
-    if file != None and not os.path.isfile(file):
-        print("Invalid file", flush=True)
-        return
-    # Fresh server lock per replay, same as start_sniff — a stale lock from a
-    # previous file in the same process would silently zero the next one.
+def _reset_session_parse_state():
+    global _locked_ips, _lock_counts, _stream_tails, _new_tails
+    global _recent_records, _dups_suppressed, _name_slots, _locked_opcode
     _locked_ips = set()
     _lock_counts = {}
     _stream_tails = {}
@@ -715,6 +777,16 @@ def open_pcap(file, output, ip_filter=True, record_pcap_path=None):
     _recent_records = {}
     _dups_suppressed = 0
     _name_slots = None
+    _locked_opcode = None
+
+
+def open_pcap(file, output, ip_filter=True, record_pcap_path=None):
+    if file != None and not os.path.isfile(file):
+        print("Invalid file", flush=True)
+        return
+    # Fresh server lock per replay, same as start_sniff — a stale lock from a
+    # previous file in the same process would silently zero the next one.
+    _reset_session_parse_state()
     print("Reading " + file, flush=True)
     if os.name == "nt":
         print("Loading file into ram. This may take a while.", flush=True)
@@ -794,18 +866,12 @@ def start_sniff(output, all_interfaces=True, ip_filter=True, record_pcap_path=No
     # deliver anything" check always reads 0, and a capture that worked is
     # reported as a dead driver.
     global _packets_seen, _stream_tails, _new_tails, _recent_records, _dups_suppressed
-    global _name_slots
+    global _name_slots, _locked_opcode
     try:
         print("Reading Network...", flush=True)
         # Fresh server lock + reassembly/dedup state per session (see the
         # module-level docs on _stream_tails and _recent_records).
-        _locked_ips = set()
-        _lock_counts = {}
-        _stream_tails = {}
-        _new_tails = {}
-        _recent_records = {}
-        _dups_suppressed = 0
-        _name_slots = None
+        _reset_session_parse_state()
         if record_pcap_path is not None:
             # Absolute path so the UI can show the user exactly where the
             # full-packet capture lands (for sharing it in for research).
