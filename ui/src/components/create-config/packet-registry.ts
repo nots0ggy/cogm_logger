@@ -70,9 +70,11 @@ export const KNOWN_PACKETS: Record<string, PacketConfig> = {
 	'6c0100aa19': { name_order: { killer: 4, victim: 3, guild: 2 }, kill: 395 },
 	// 2026-09-14 NA layout (opcode 6601003e14). Families col3 (subject) /
 	// col4 (enemy), guild col2, leftover col0 enemy char / col1 subject char.
-	// Flag at hex char 10 (byte 5), 1 = subject killed. Calibrated against
-	// RAT 14.09 (1236 records: 659 kills / 577 deaths, flag splits cleanly).
-	'6601003e14': { name_order: { killer: 3, victim: 4, guild: 2 }, kill: 10 },
+	// Flag at hex char 11 (low nibble of byte 5), 1 = subject killed.
+	// Char 10 is the high nibble of 0x00/0x01 and is always '0' — pinning
+	// that turns every kill into a death (RAT 16.09: 0/1500). Calibrated
+	// against RAT 14.09 (1236; 659/577) and RAT 16.09 (1499; 927/572).
+	'6601003e14': { name_order: { killer: 3, victim: 4, guild: 2 }, kill: 11 },
 	// 2026-08-13 game update: marker-based OBSERVER records replace the
 	// 5-name fixed-offset packet (docs/patch-2026-08-13-new-kill-format.md).
 	// The capture engine finds the two identity blocks by scanning for
