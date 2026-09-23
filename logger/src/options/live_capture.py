@@ -44,6 +44,77 @@ def extract_string(hex, offset, length):
         return -1
 
 
+def extract_unicode_string(hex, offset, length=64):
+    """Decode a name field holding non-ASCII UTF-16LE units, or return -1.
+
+    extract_string only accepts code units whose high byte is 00, so any name
+    with a Thai letter in it (SEA server, 2026-09-23: "Jสmbสng", "่Ryuu",
+    "Solaเซลล์") came back -1. The scan then found a tail of the name at the
+    wrong offset ("ng") or nothing at all, and the kill was dropped or its
+    column went Unknown.
+
+    Opening up to arbitrary UTF-16 would let binary bytes through, because
+    random byte pairs decode to CJK and Hangul. So this path is strict:
+      - the name is followed by a 0x0000 terminator and zero padding to the
+        end of the field, or fills all 16 units (seen on real 16-unit names);
+      - a field cut short by the end of the buffer counts only when its
+        terminator is inside the part we have;
+      - every unit is ASCII letter/digit/underscore or a Thai letter, vowel,
+        tone mark or digit (_unicode_name_regex), with at least one unit
+        outside ASCII. All-ASCII fields stay with extract_string, so ASCII
+        wars decode exactly as before.
+    A leading combining mark is allowed: "่Ryuu" really starts with U+0E48.
+    """
+    if length % 4 != 0:
+        return -1
+    field = hex[offset: offset + length]
+    # The scan reads names out of the first 600 hex only, so a field that
+    # starts near the end of that window arrives cut short (6c0100aa19 puts
+    # its fifth name at 538, which runs to 602). Accept a short field only
+    # when its terminator is inside what we have, and whatever partial unit
+    # the cut left is zero. Otherwise the zero-padding check proves nothing.
+    whole = len(field) - len(field) % 4
+    truncated = whole != length
+    if truncated and field[whole:].strip("0"):
+        return -1
+    field = field[:whole]
+    if not field:
+        return -1
+    # Cheap rejects first: this runs at every scan offset extract_string turns
+    # down. A name cannot start with a 00 byte (no allowed unit has a zero low
+    # byte), every allowed unit has high byte 00 (ASCII, padding) or 0e
+    # (Thai), and a field with no 0e unit is all-ASCII, which is
+    # extract_string's job.
+    if field[0:2] == "00":
+        return -1
+    thai = False
+    for j in range(2, whole, 4):
+        high = field[j: j + 2]
+        if high == "0e":
+            thai = True
+        elif high != "00":
+            return -1
+    if not thai:
+        return -1
+    try:
+        raw = bytes.fromhex(field)
+    except ValueError:
+        return -1
+    units = [raw[i] | (raw[i + 1] << 8) for i in range(0, len(raw), 2)]
+    if 0 in units:
+        end = units.index(0)
+    elif truncated:
+        return -1
+    else:
+        end = len(units)
+    if any(units[end:]):
+        return -1
+    name = "".join(chr(u) for u in units[:end])
+    if name.isascii() or not _is_unicode_name(name):
+        return -1
+    return name
+
+
 # Per-source reassembly tails, keyed by the packet's source IP. This used to be
 # one global buffer shared by every stream, which was fine when we captured a
 # single interface: kill packets only ever came from one war server. Capturing
@@ -222,6 +293,89 @@ NEW_UNKNOWN_FIELD_HEX = "55006e006b006e006f0077006e00".ljust(64, "0")
 # families and the guild were sitting in the other columns. 2–16, either case.
 name_regex = r"^[A-Za-z][A-Za-z0-9_]{1,15}$"
 
+# Names with Thai in them (SEA servers). BDO lets Thai letters, vowels, tone
+# marks and digits mix with Latin, and a name may even start with a tone mark
+# (U+0E48 in "่Ryuu"). Thai only on purpose, not "any letter": binary bytes read
+# as UTF-16 mostly land in CJK and Hangul, so admitting those scripts would
+# admit garbage. Excluded Thai code points are the baht sign and the
+# punctuation marks (U+0E3F, U+0E4F, U+0E5A-5B). Same 2-16 length and no
+# leading digit/underscore as name_regex. Only ever applied to names that
+# contain a non-ASCII unit (see extract_unicode_string), so ASCII names are
+# still judged by name_regex alone.
+_THAI_NAME_CHARS = "\u0e01-\u0e3a\u0e40-\u0e4e\u0e50-\u0e59"
+_unicode_name_regex = re.compile(
+    rf"^(?![0-9_\u0e50-\u0e59])[A-Za-z0-9_{_THAI_NAME_CHARS}]{{2,16}}$"
+)
+# At least one unit that is not a combining mark: a field of tone marks alone
+# is not a name.
+_THAI_MARKS = "\u0e31\u0e34-\u0e3a\u0e47-\u0e4e"
+_unicode_name_base = re.compile(rf"[^{_THAI_MARKS}]")
+
+
+def _is_unicode_name(name):
+    return bool(_unicode_name_regex.match(name)) and bool(_unicode_name_base.search(name))
+
+
+def _is_valid_name(name):
+    """name_regex for ASCII names; the Thai-aware rule for anything else."""
+    if not isinstance(name, str):
+        return False
+    if name.isascii():
+        return bool(re.match(name_regex, name))
+    return _is_unicode_name(name)
+
+
+def _extract_name(hex, offset, length=64):
+    """extract_string, then the strict UTF-16 path when that rejects the field."""
+    name = extract_string(hex, offset, length)
+    if _may_be_unicode(name) and hex[offset + 2: offset + 4] in _UNICODE_FIRST_HIGH:
+        alt = extract_unicode_string(hex, offset, length)
+        if alt != -1:
+            name = alt
+    return name
+
+
+def _may_be_unicode(name):
+    """True when extract_string's answer leaves room for a Thai name.
+
+    extract_string never checks the high byte of a field's 16th unit, so a
+    16-unit name ending in a Thai letter ("LETSGETITBABYYY่") comes back as
+    latin-1 with a stray 0x0e instead of -1. Without this, the scan skipped the
+    real start and later accepted the name minus its first letter.
+    """
+    return name == -1 or "\x0e" in name
+
+
+# High byte of the first unit of any name the Unicode path can accept (ASCII
+# letter or Thai). Checked inline before calling extract_unicode_string: the
+# scan tries every offset of every candidate, and this one slice rejects almost
+# all of them without a function call.
+_UNICODE_FIRST_HIGH = ("00", "0e")
+
+
+def _emit_line(line):
+    """Print a record line to the UI without ever raising.
+
+    Record lines used to be pure ASCII. With Thai names they are not, and on a
+    Windows build stdout is a pipe in the ANSI code page (cp1252 on most
+    machines), where print() raises UnicodeEncodeError. That exception would
+    escape package_handler into scapy's sniff and end the capture mid-war. So a
+    non-ASCII line goes out as UTF-8 bytes directly; ASCII lines are printed
+    exactly as before.
+    """
+    if line.isascii():
+        print(line, flush=True)
+        return
+    try:
+        sys.stdout.flush()
+        sys.stdout.buffer.write((line + "\n").encode("utf-8"))
+        sys.stdout.buffer.flush()
+    except Exception:
+        try:
+            print(line.encode("ascii", "replace").decode("ascii"), flush=True)
+        except Exception:
+            pass
+
 # Learned 5 column hex-offsets for this session, from the first *clean*
 # 5-name record. Incomplete records slot onto that layout so a garbled
 # character column does not drop a kill that still has killer/victim/guild.
@@ -240,7 +394,7 @@ def _parse_scanned_name(field):
 
 
 def _is_real_name(name):
-    return name != "Unknown" and bool(re.match(name_regex, name))
+    return name != "Unknown" and _is_valid_name(name)
 
 
 def _real_name_count(fields):
@@ -306,7 +460,7 @@ def _place_on_slots(parsed, name_window, slots):
             used.add(best)
             out.append(f"{parsed[best][0]} {slot}")
             continue
-        raw = extract_string(name_window, slot, 64)
+        raw = _extract_name(name_window, slot, 64)
         if isinstance(raw, str) and _is_real_name(raw):
             out.append(f"{raw} {slot}")
         else:
@@ -454,14 +608,11 @@ def _scan_new_format(payload, package, package_src):
             retain_from = idx
             break
 
-        k_char = extract_string(buf, m1 + NEW_CHAR_OFF_HEX, 64)
-        k_fam = extract_string(buf, m1 + NEW_CHAR_OFF_HEX + NEW_FAM_OFF_HEX, 64)
-        v_char = extract_string(buf, m2 + NEW_CHAR_OFF_HEX, 64)
-        v_fam = extract_string(buf, m2 + NEW_CHAR_OFF_HEX + NEW_FAM_OFF_HEX, 64)
-        names_ok = all(
-            isinstance(n, str) and re.match(name_regex, n)
-            for n in (k_char, k_fam, v_char, v_fam)
-        )
+        k_char = _extract_name(buf, m1 + NEW_CHAR_OFF_HEX, 64)
+        k_fam = _extract_name(buf, m1 + NEW_CHAR_OFF_HEX + NEW_FAM_OFF_HEX, 64)
+        v_char = _extract_name(buf, m2 + NEW_CHAR_OFF_HEX, 64)
+        v_fam = _extract_name(buf, m2 + NEW_CHAR_OFF_HEX + NEW_FAM_OFF_HEX, 64)
+        names_ok = all(_is_valid_name(n) for n in (k_char, k_fam, v_char, v_fam))
         if not names_ok:
             pos = idx + len(NEW_SIG_HEX)
             continue
@@ -525,7 +676,7 @@ def _scan_new_format(payload, package, package_src):
             + ","
             + emit_hex
         )
-        print(line, flush=True)
+        _emit_line(line)
         if _log_file is not None:
             try:
                 _log_file.write(line + "\n")
@@ -686,10 +837,18 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
                 names = []
                 while i < 600:
                     name = extract_string(name_window, i, 64)
+                    if (
+                        _may_be_unicode(name)
+                        and name_window[i + 2: i + 4] in _UNICODE_FIRST_HIGH
+                        and name_window[i: i + 2] != "00"
+                    ):
+                        alt = extract_unicode_string(name_window, i, 64)
+                        if alt != -1:
+                            name = alt
                     if name == -1:
                         i += 1
                         continue
-                    is_valid = re.match(name_regex, name)
+                    is_valid = _is_valid_name(name)
                     if is_valid:
                         names.append(name + " " + str(i))
                         i += 64
@@ -739,7 +898,7 @@ def package_handler(package, output, ip_filter=True, record_pcap_path=None):
                         + ","
                         + possible_log
                     )
-                    print(line, flush=True)
+                    _emit_line(line)
                     # Durability: write each captured record straight to disk
                     # so a PC crash mid-war can't wipe the session (the UI
                     # otherwise holds logs only in memory until Save). Flush

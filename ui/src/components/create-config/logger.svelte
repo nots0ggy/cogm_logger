@@ -17,7 +17,8 @@
 		get_formatted_date,
 		get_config,
 		get_cogm_roster,
-		hexToString,
+		hexToName,
+		is_thai_name,
 		calculate_kd,
 		save_name_order_sample,
 		PERSONAL_FAMILY_NAME_KEY
@@ -27,7 +28,8 @@
 		dominant_identifier,
 		is_uncalibrated,
 		refresh_remote_registry,
-		registry_version
+		registry_version,
+		SUBJECT_FIRST_CHARS
 	} from './packet-registry';
 	import { filesystem, os, storage } from '@neutralinojs/lib';
 	import { onMount } from 'svelte';
@@ -391,9 +393,7 @@
 		const names = possible_name_offsets
 			.map((list, index) => {
 				const selected = name_indicies[index];
-				return hexToString(log.hex.slice(list[selected].offset, list[selected].offset + 64))
-					.replaceAll('\0', '')
-					.replaceAll(' ', '');
+				return hexToName(log.hex.slice(list[selected].offset, list[selected].offset + 64));
 			});
 		return names;
 	};
@@ -405,9 +405,7 @@
 		// before they're rebuilt from the first kill. Return empty rather than
 		// throw; the next reactive pass resolves it once the columns exist.
 		if (!list || !list[selected]) return '';
-		return hexToString(log.hex.slice(list[selected].offset, list[selected].offset + 64))
-			.replaceAll('\0', '')
-			.replaceAll(' ', '');
+		return hexToName(log.hex.slice(list[selected].offset, list[selected].offset + 64));
 	};
 
 	// Killer / victim / guild are enough to track a kill. Character slots
@@ -417,7 +415,9 @@
 		// 'Unknown' is the capture placeholder for a garbled column AND the
 		// observer-format guild field. Killer/victim must be a real name;
 		// guild may be Unknown (observer records carry no guild tag).
-		return typeof n === 'string' && n !== 'Unknown' && COMBAT_NAME.test(n);
+		return (
+			typeof n === 'string' && n !== 'Unknown' && (COMBAT_NAME.test(n) || is_thai_name(n))
+		);
 	}
 
 	// The resolved name in each captured column for the first kill, shown as
@@ -798,6 +798,7 @@
 					(i) => i !== player_one_index && i !== player_two_index && i !== guild_index
 				);
 				const remaining_names = remaining_indicies.map((i) => get_name(i, log));
+				if (SUBJECT_FIRST_CHARS.has(config.identifier)) remaining_names.reverse();
 				if (remaining_names.every(usable_combat_name)) {
 					characters = ` (${remaining_names.join(',')})`;
 				}

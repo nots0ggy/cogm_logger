@@ -24,7 +24,7 @@
 import { storage } from '@neutralinojs/lib';
 import { writable } from 'svelte/store';
 import type { LogType } from './config';
-import { hexToString } from './config';
+import { hexToName } from './config';
 
 export type PacketConfig = {
 	name_order: { killer: number; victim: number; guild: number };
@@ -75,6 +75,13 @@ export const KNOWN_PACKETS: Record<string, PacketConfig> = {
 	// that turns every kill into a death (RAT 16.09: 0/1500). Calibrated
 	// against RAT 14.09 (1236; 659/577) and RAT 16.09 (1499; 927/572).
 	'6601003e14': { name_order: { killer: 3, victim: 4, guild: 2 }, kill: 11 },
+	// 2026-09-23 SEA/TH layout (opcode 670100e111). col0 subject char, col1
+	// enemy guild, col2 enemy char, col3 subject family, col4 enemy family.
+	// Flag at hex char 393 (low nibble of byte 196), 1 = subject killed.
+	// Calibrated against three alliance warscores from the same war: 229/150
+	// decoded vs 230/138 on the boards; the surplus is 13 deaths after the war
+	// timer, which the board does not count.
+	'670100e111': { name_order: { killer: 3, victim: 4, guild: 1 }, kill: 393 },
 	// 2026-08-13 game update: marker-based OBSERVER records replace the
 	// 5-name fixed-offset packet (docs/patch-2026-08-13-new-kill-format.md).
 	// The capture engine finds the two identity blocks by scanning for
@@ -94,6 +101,14 @@ export const KNOWN_PACKETS: Record<string, PacketConfig> = {
 	// release; a registry flip alone would fix display but not orientation).
 	'2e03010003': { name_order: { killer: 1, victim: 3, guild: 4 }, kill: 5 }
 };
+
+// Opcodes whose two leftover (character) columns hold the subject's character
+// first. CoGM reads the pair as "(otherChar,subjectChar)", and get_logs_string
+// emits the leftovers in ascending column order, which is right for every
+// other layout; for these it would store each side's character on the other
+// family. Kept out of PacketConfig because /api/logger/packet-registry serves
+// only {name_order, kill} and a remote entry replaces the compiled one whole.
+export const SUBJECT_FIRST_CHARS: ReadonlySet<string> = new Set(['670100e111']);
 
 // ── Observer-record orientation (2026-08-13 format) ─────────────────────────
 // CoGM ingest assumes the subject column is always the uploader's guild
@@ -119,9 +134,7 @@ const OBS_VFAM = 382;
 const OBS_FLAG = 5;
 
 function obs_read(hex: string, off: number): string {
-	return hexToString(hex.slice(off, off + OBS_FIELD))
-		.replaceAll('\0', '')
-		.replaceAll(' ', '');
+	return hexToName(hex.slice(off, off + OBS_FIELD));
 }
 
 /** Lowercased own-family set from a stored roster, or null when unavailable. */

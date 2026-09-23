@@ -322,3 +322,46 @@ export function hexToString(hex: string) {
 	}
 	return string;
 }
+
+// Thai letters, vowels, tone marks and digits: the same set the capture engine
+// accepts (live_capture.py _THAI_NAME_CHARS). Thai only on purpose: random
+// bytes read as UTF-16 mostly land in CJK and Hangul.
+const THAI_NAME_CHARS = 'ก-ฺเ-๎๐-๙';
+const THAI_NAME = new RegExp(`^(?![0-9_๐-๙])[A-Za-z0-9_${THAI_NAME_CHARS}]{2,16}$`);
+const THAI_MARK_ONLY = /^[ัิ-ฺ็-๎]+$/;
+
+/** A name with Thai in it that the capture engine would also accept. */
+export function is_thai_name(name: string): boolean {
+	return /[^\x00-\x7f]/.test(name) && THAI_NAME.test(name) && !THAI_MARK_ONLY.test(name);
+}
+
+/**
+ * Read one 32-byte name field from packet hex.
+ *
+ * Names are UTF-16LE. hexToString reads a byte at a time, which works for
+ * ASCII once the 00 high bytes are stripped, but turns a Thai unit (2a 0e)
+ * into '*' plus a control character. On the SEA server (2026-09-23) that
+ * failed the name check on 81 of 360 kills and dropped them from the upload.
+ * So a field holding Thai units is decoded as UTF-16LE when it passes the same
+ * strict test as the engine (terminator + zero padding, Thai/ASCII only);
+ * every other field goes through the byte-wise path unchanged.
+ */
+export function hexToName(hex: string): string {
+	const bytewise = hexToString(hex).replaceAll('\0', '').replaceAll(' ', '');
+	const whole = hex.length - (hex.length % 4);
+	let thai = false;
+	for (let j = 2; j < whole; j += 4) {
+		const high = hex.slice(j, j + 2);
+		if (high === '0e') thai = true;
+		else if (high !== '00') return bytewise;
+	}
+	if (!thai || hex.slice(0, 2) === '00') return bytewise;
+	const units: number[] = [];
+	for (let i = 0; i < whole; i += 4) {
+		units.push(parseInt(hex.slice(i + 2, i + 4) + hex.slice(i, i + 2), 16));
+	}
+	const end = units.indexOf(0);
+	if (end === -1 ? whole < 64 : units.slice(end).some((u) => u !== 0)) return bytewise;
+	const name = String.fromCharCode(...units.slice(0, end === -1 ? units.length : end));
+	return is_thai_name(name) ? name : bytewise;
+}

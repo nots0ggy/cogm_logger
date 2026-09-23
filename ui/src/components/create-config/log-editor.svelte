@@ -76,7 +76,8 @@
 						(i) => i !== player_one_index && i !== player_two_index && i !== guild_index
 					);
 					const remaining_names = remaining_indicies.map((i) => log.names[i]);
-					characters = ` (${remaining_names.join(',')})`;
+					// A line saved without characters has none to write back.
+					if (remaining_names.every(Boolean)) characters = ` (${remaining_names.join(',')})`;
 				}
 				return `[${log.time}] ${log.names[player_one_index]} ${
 					log.kill ? 'has killed' : 'died to'

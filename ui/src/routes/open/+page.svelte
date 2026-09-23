@@ -32,7 +32,11 @@
 	$: total_loaded = is_network ? logs.length : combat_logs.length;
 	$: has_file = loaded_filename !== '';
 
-	const log_regex = /\[(.+)\] (\w+) (died to|has killed) (\w+) from (\w+|-1)(?: \((\w+),(\w+)\))?/;
+	// Same shape CoGM parses (apps/web/lib/pvp/log-parser.ts). Names are \S+, not
+	// \w+: SEA names carry Thai letters and tone marks ("่Ryuu", "Jสmbสng"), which
+	// \w dropped or cut short.
+	const log_regex =
+		/^\[(.+?)\] (\S+) (died to|has killed) (\S+) from (.+?)(?: \(([^,]+),([^)]+)\))?$/;
 
 	const logger_callback: LoggerCallback = (data, status) => {
 		if (status === 'running') {
@@ -89,7 +93,7 @@
 			logs = [];
 			const lines = data.split('\n');
 			for (const line of lines) {
-				const match = line.match(log_regex);
+				const match = line.trim().match(log_regex);
 				if (match) {
 					const new_combat_log: Log = {
 						time: match[1],
