@@ -108,7 +108,17 @@ export const KNOWN_PACKETS: Record<string, PacketConfig> = {
 // other layout; for these it would store each side's character on the other
 // family. Kept out of PacketConfig because /api/logger/packet-registry serves
 // only {name_order, kill} and a remote entry replaces the compiled one whole.
-export const SUBJECT_FIRST_CHARS: ReadonlySet<string> = new Set(['670100e111']);
+// Measured from captures: the subject's character column maps 1:1 onto the
+// subject family (720100fe1a col1->col3 on 16.08 and 13.08; 670100e111
+// col0->col3 on 23.09). 640100bb17, 6b01003f0e and 6c0100aa19 are enemy-first.
+// 2e03010003 is subject-first by construction: the engine normalizes it to
+// col0 killer char / col2 victim char, and orient_observer_log keeps our side
+// in the killer columns.
+export const SUBJECT_FIRST_CHARS: ReadonlySet<string> = new Set([
+	'670100e111',
+	'720100fe1a',
+	'2e03010003'
+]);
 
 // ── Observer-record orientation (2026-08-13 format) ─────────────────────────
 // CoGM ingest assumes the subject column is always the uploader's guild
